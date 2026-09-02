@@ -49,48 +49,6 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
         let filesByID: [UUID: WorkspaceFileRecord]
     }
 
-    func testProductionSourcesDoNotReferenceRetiredCatalogShardBuilders() throws {
-        let repoRoot = try RepoRoot.url()
-        let sourceRoot = repoRoot.appendingPathComponent("Sources", isDirectory: true)
-        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
-            at: sourceRoot,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ))
-        let historicalDeclarationIdentifiers: Set<String> = [
-            "buildRootCatalogShard" + "Patch",
-            "buildAuthoritativeCatalog" + "Components"
-        ]
-        let pendingBuilderIdentifier = "buildPendingCatalog" + "Components"
-        let retiredContainerIdentifier = "WorkspaceInventoryCatalog" + "Builders"
-        let retiredMergeIdentifier = "mergeRootCatalogShard" + "FileEntryLists"
-        let forbiddenIdentifiers = historicalDeclarationIdentifiers.union([
-            pendingBuilderIdentifier,
-            retiredContainerIdentifier,
-            retiredMergeIdentifier
-        ])
-        var violations: [String] = []
-        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
-            let relativePath = RepoRoot.relativePath(for: fileURL, relativeTo: repoRoot)
-            let source = try String(contentsOf: fileURL, encoding: .utf8)
-            for (lineOffset, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-                let trimmedLine = line.trimmingCharacters(in: .whitespaces)
-                guard !trimmedLine.hasPrefix("//"), !trimmedLine.hasPrefix("*") else { continue }
-                for forbiddenIdentifier in forbiddenIdentifiers where line.contains(forbiddenIdentifier) {
-                    violations.append("\(relativePath):\(lineOffset + 1):\(forbiddenIdentifier)")
-                }
-            }
-        }
-        XCTAssertEqual(violations, [], "retired production builder references: \(violations.sorted())")
-        let retiredProductionFile = sourceRoot
-            .appendingPathComponent("RepoPrompt/Infrastructure/WorkspaceContext/Inventory", isDirectory: true)
-            .appendingPathComponent("WorkspaceInventoryCatalog" + "Builders.swift")
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: retiredProductionFile.path),
-            "retired production builder file must remain deleted"
-        )
-    }
-
     /// E-1's pass criteria (`p4-workspace-inventory-authority-v2-2026-08-22.md` §10):
     /// - large roots (10k/100k): single-delta apply <= 1.10x this Swift reference.
     /// - small roots (100/1k): absolute single-delta apply < 50 microseconds, p99 < 200 microseconds

@@ -85,19 +85,6 @@ final class TestReleaseFence: @unchecked Sendable {
         await enterAndWait()
     }
 
-    /// Park without flipping entered (for multi-phase fences that mark entered separately).
-    func waitUnlessReleased() async {
-        guard !Task.isCancelled else { return }
-        let waiterID = UUID()
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                registerParkOnly(continuation, waiterID: waiterID)
-            }
-        } onCancel: {
-            cancel(waiterID: waiterID)
-        }
-    }
-
     /// Synchronous enter wait for **true sync call sites only**
     /// (e.g. from a DispatchQueue callback or another non-async context).
     /// Do **not** call this from an `async` function that also needs the enter producer
@@ -209,17 +196,6 @@ final class TestReleaseFence: @unchecked Sendable {
         }
     }
 
-    private func registerParkOnly(_ continuation: CheckedContinuation<Void, Never>, waiterID: UUID) {
-        condition.lock()
-        if released || Task.isCancelled || cancelledWaiters.remove(waiterID) != nil {
-            condition.unlock()
-            continuation.resume()
-        } else {
-            continuations[waiterID] = continuation
-            condition.unlock()
-        }
-    }
-
     private func cancel(waiterID: UUID) {
         condition.lock()
         let continuation = continuations.removeValue(forKey: waiterID)
@@ -321,7 +297,6 @@ final class TestBlockingFence: @unchecked Sendable {
 /// - multi-waiter support (each waiter has its own sticky id)
 /// - always marks entered before cancel branching so `waitUntilEntered` cannot hang
 /// - bounded cooperative `waitUntilEntered`
-/// - `forceCancel()` for teardown / observation
 final class TestCancellationGate: @unchecked Sendable {
     private let name: String
     private let lock = NSLock()
@@ -388,23 +363,6 @@ final class TestCancellationGate: @unchecked Sendable {
                 XCTFail(error.localizedDescription)
             }
             return hasEnteredForTesting
-        }
-    }
-
-    /// Explicit cancel for cleanup paths that are not driven by `Task.cancel()`.
-    /// Cancels all parked waiters and stamps sticky cancel for late registrants.
-    func forceCancel() {
-        lock.lock()
-        let alreadyCancelled = cancelled
-        cancelled = true
-        if !alreadyCancelled {
-            storedCancellationCount += 1
-        }
-        let pending = Array(continuations.values)
-        continuations.removeAll()
-        lock.unlock()
-        for continuation in pending {
-            continuation.resume(throwing: CancellationError())
         }
     }
 

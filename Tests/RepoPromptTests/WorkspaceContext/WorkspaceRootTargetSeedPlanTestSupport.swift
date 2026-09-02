@@ -158,18 +158,6 @@ enum WorkspaceRootTargetSeedPlanTestSupport {
         )
     }
 
-    static func readAll(
-        _ handle: WorkspaceRootTargetSeedPlanHandle
-    ) throws -> [WorkspaceRootTargetSeedPlanRecord] {
-        let reader = try handle.makeReader()
-        var records: [WorkspaceRootTargetSeedPlanRecord] = []
-        while let record = try reader.next() {
-            records.append(record)
-        }
-        precondition(reader.validationState == .verified)
-        return records
-    }
-
     static let namespacePolicy = WorkspaceRootNamespaceManifestResourcePolicy(
         maximumBufferedRecordBytes: 4096,
         maximumRecordsPerBatch: 32,

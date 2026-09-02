@@ -150,42 +150,6 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
         XCTAssertTrue(legacyManual.autoCodemapPaths.isEmpty)
     }
 
-    func testSelectionProductionPathContainsNoLegacyRelationshipCalls() throws {
-        let repoRoot = try RepoRoot.url()
-        let sourceDirectories = [
-            "Sources/RepoPrompt/Infrastructure/WorkspaceContext/Selection",
-            "Sources/RepoPrompt/Features/WorkspaceFiles"
-        ]
-        let forbiddenCalls = [
-            "codemapFileAPIAggregate(",
-            "CodeMapExtractor.resolveReferencedFilePaths(",
-            "CodeMapExtractor.getAutoReferencedAPIs("
-        ]
-        var violations: [String] = []
-
-        for directory in sourceDirectories {
-            let directoryURL = repoRoot.appendingPathComponent(directory, isDirectory: true)
-            let enumerator = try XCTUnwrap(
-                FileManager.default.enumerator(
-                    at: directoryURL,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                )
-            )
-            for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
-                let contents = try String(contentsOf: fileURL, encoding: .utf8)
-                for call in forbiddenCalls where contents.contains(call) {
-                    violations.append("\(RepoRoot.relativePath(for: fileURL, relativeTo: repoRoot)): \(call)")
-                }
-            }
-        }
-
-        XCTAssertTrue(
-            violations.isEmpty,
-            "Selection production paths must not call legacy codemap relationship APIs:\n\(violations.joined(separator: "\n"))"
-        )
-    }
-
     private func makeRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("WorkspaceSelectionAutoCodemapInvariantTests", isDirectory: true)

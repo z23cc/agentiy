@@ -24,20 +24,6 @@ extension XCTestCase {
         return url
     }
 
-    func makeTestPath(
-        name: String = #function,
-        namespace: String = "RepoPromptTests"
-    ) -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(namespace, isDirectory: true)
-            .appendingPathComponent("\(Self.sanitizedFixtureName(name))-\(UUID().uuidString)")
-            .standardizedFileURL
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: url)
-        }
-        return url
-    }
-
     private static func sanitizedFixtureName(_ name: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
         let scalars = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
@@ -49,17 +35,5 @@ extension XCTestCase {
 enum SwiftFixtureSource {
     static func emptyStruct(_ name: String, trailingNewline: Bool = true) -> String {
         "struct \(name) {}" + (trailingNewline ? "\n" : "")
-    }
-
-    static func sourceReferencingTarget(
-        source: String = "Source",
-        target: String = "Target",
-        sourcePath: String? = nil,
-        targetPath: String? = nil
-    ) -> [String: String] {
-        [
-            sourcePath ?? "Sources/\(source).swift": "struct \(source) { let target: \(target) }\n",
-            targetPath ?? "Sources/\(target).swift": emptyStruct(target)
-        ]
     }
 }

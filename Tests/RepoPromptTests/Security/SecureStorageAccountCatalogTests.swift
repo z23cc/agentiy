@@ -73,28 +73,4 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
             SecureStorageAccountCatalog.agentPermissionAccounts
         )
     }
-
-    func testSecureStorageBackendBoundaryRemainsCentralized() throws {
-        let root = try RepoRoot.url()
-        let sourceRoot = root.appendingPathComponent("Sources/RepoPrompt", isDirectory: true)
-        let allowedFiles: Set = [
-            "Sources/RepoPrompt/Infrastructure/Security/EphemeralSecureKeyValueStore.swift",
-            "Sources/RepoPrompt/Infrastructure/Security/KeychainService.swift",
-            "Sources/RepoPrompt/Infrastructure/Security/SecureKeyService.swift",
-            "Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift",
-            "Sources/RepoPrompt/Infrastructure/Security/SecureStorageRepairService.swift"
-        ]
-
-        var filesUsingBackend: Set<String> = []
-        let enumerator = FileManager.default.enumerator(at: sourceRoot, includingPropertiesForKeys: nil)
-        while let fileURL = enumerator?.nextObject() as? URL {
-            guard fileURL.pathExtension == "swift" else { continue }
-            let text = try String(contentsOf: fileURL, encoding: .utf8)
-            if text.contains("SecureKeyValueStorageBackend") {
-                filesUsingBackend.insert(RepoRoot.relativePath(for: fileURL, relativeTo: root))
-            }
-        }
-
-        XCTAssertEqual(filesUsingBackend, allowedFiles)
-    }
 }

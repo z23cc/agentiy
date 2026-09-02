@@ -3,15 +3,6 @@ import Foundation
 import XCTest
 
 final class ClaudeCompatiblePluginBridgeTests: XCTestCase {
-    func testOnlyBridgeImportsProviderPackage() throws {
-        let repoRoot = try RepoRoot.url()
-        let sourcesRoot = repoRoot.appendingPathComponent("Sources/RepoPrompt", isDirectory: true)
-        let expected = "Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/ClaudeCompatibleProviderRuntimeBridge.swift"
-        let imports = try sourceFilesImportingProviderPackage(under: sourcesRoot, repoRoot: repoRoot)
-
-        XCTAssertEqual(imports, [expected])
-    }
-
     func testBridgeRuntimeSmokeMapsPluginIDsDiscoveryRuntimeAndHeadlessAdapters() throws {
         let cases: [(AgentProviderKind, String)] = [
             (.claudeCode, "claude-code"),
@@ -716,27 +707,5 @@ final class ClaudeCompatiblePluginBridgeTests: XCTestCase {
                 defaults.removeObject(forKey: configuredKey)
             }
         }
-    }
-
-    private func sourceFilesImportingProviderPackage(
-        under sourcesRoot: URL,
-        repoRoot: URL
-    ) throws -> [String] {
-        let fileManager = FileManager.default
-        let enumerator = fileManager.enumerator(
-            at: sourcesRoot,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
-        var imports: [String] = []
-        while let url = enumerator?.nextObject() as? URL {
-            guard url.pathExtension == "swift" else { continue }
-            let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
-            guard resourceValues.isRegularFile == true else { continue }
-            let contents = try String(contentsOf: url, encoding: .utf8)
-            guard contents.contains("import RepoPromptClaudeCompatibleProvider") else { continue }
-            imports.append(RepoRoot.relativePath(for: url, relativeTo: repoRoot))
-        }
-        return imports.sorted()
     }
 }

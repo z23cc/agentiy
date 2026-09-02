@@ -305,7 +305,7 @@ Standard checks for changes that touch the seam:
 swift build --product Agentry
 
 # Focused suites used during Work Items 1–9
-swift test --filter 'ClaudeRustBackedTurnLevelDifferentialTests|ClaudeNativeRuntimeHostPolicyTests|ClaudeRustBackedAdapterCutoverTests|ClaudeCompatibleBackendEnvironmentTests|ClaudeCompatibleModelCatalogTests|ClaudeCompatiblePluginBridgeTests'
+swift test --filter 'ClaudeRustBackedTurnLevelDifferentialTests|ClaudeNativeRuntimeHostPolicyTests|ClaudeCompatiblePluginBridgeTests'
 
 # Package-only iteration
 cd Packages/RepoPromptAgentProviders && swift test

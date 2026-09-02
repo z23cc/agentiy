@@ -53,37 +53,6 @@ enum WorkspaceRootSeedTestSupport {
         return WorkspaceRootSeedCompatibilityKey(authority: authority)
     }
 
-    static func canonicalizationDiagnostics(
-        prunedRootCount: Int = 0,
-        prunedRootSummarySHA256: String = String(repeating: "a", count: 64),
-        completeness: GitWorkspacePolicyCanonicalizationDiagnostics.Completeness = .complete,
-        committedControlCount: Int = 1,
-        committedControlSummarySHA256: String = String(repeating: "b", count: 64)
-    ) -> GitWorkspacePolicyCanonicalizationDiagnostics {
-        func digest(_ scalar: Character) -> String {
-            String(repeating: scalar, count: 64)
-        }
-        return GitWorkspacePolicyCanonicalizationDiagnostics(
-            rootNeutralPolicyConfigByteCount: 0,
-            rootNeutralPolicyConfigSHA256: digest("0"),
-            commonInfoExclude: .init(state: .missing, digest: digest("1")),
-            canonicalIgnoreFooter: .init(digest: digest("2"), recordCount: 4),
-            externalExcludes: .init(state: .unset, identityDigest: digest("3"), byteCount: 0),
-            configuredIgnorePolicyDigest: digest("4"),
-            commonInfoAttributes: .init(state: .missing, digest: digest("5")),
-            canonicalAttributeFooter: .init(digest: digest("6"), recordCount: 1),
-            externalAttributes: .init(state: .unset, identityDigest: digest("7"), byteCount: 0),
-            attributePolicyDigest: digest("8"),
-            sparsePolicyDigest: digest("9"),
-            canonicalizationPolicyVersion: WorkspaceGitignorePolicyIdentity.current.rawValue,
-            prunedRootCount: prunedRootCount,
-            prunedRootSummarySHA256: prunedRootSummarySHA256,
-            completeness: completeness,
-            committedControlCount: committedControlCount,
-            committedControlSummarySHA256: committedControlSummarySHA256
-        )
-    }
-
     static func snapshot(
         paths: [(String, String)],
         treeOID: GitObjectID = oid(),
@@ -133,68 +102,6 @@ enum WorkspaceRootSeedTestSupport {
             ),
             catalogPolicyIdentity: catalogPolicyIdentity,
             estimatedByteCount: searchablePaths.reduce(0) { $0 + $1.utf8.count + 96 }
-        )
-    }
-
-    static func indexEntry(
-        _ path: String,
-        mode: String = "100644",
-        stage: Int = 0,
-        assumeUnchanged: Bool = false,
-        skipWorktree: Bool = false
-    ) -> GitIndexManifestEntry {
-        GitIndexManifestEntry(
-            mode: mode,
-            objectID: oid("c"),
-            stage: stage,
-            repositoryRelativePath: path,
-            assumeUnchanged: assumeUnchanged,
-            skipWorktree: skipWorktree
-        )
-    }
-
-    static func status(
-        _ records: [GitPorcelainV2PathRecord]
-    ) -> GitStatusPorcelainV2Snapshot {
-        GitStatusPorcelainV2Snapshot(
-            branch: nil,
-            headID: nil,
-            upstream: nil,
-            ahead: nil,
-            behind: nil,
-            staged: [],
-            modified: [],
-            untracked: records.compactMap { $0.kind == .untracked ? $0.path : nil },
-            pathRecords: records
-        )
-    }
-
-    static func pathRecord(
-        kind: GitPorcelainV2RecordKind,
-        path: String,
-        indexStatus: Character? = ".",
-        workTreeStatus: Character? = ".",
-        indexMode: String? = "100644",
-        workTreeMode: String? = "100644",
-        submoduleState: String? = "N..."
-    ) -> GitPorcelainV2PathRecord {
-        GitPorcelainV2PathRecord(
-            kind: kind,
-            path: path,
-            indexStatus: indexStatus,
-            workTreeStatus: workTreeStatus,
-            submoduleState: submoduleState,
-            headMode: "100644",
-            indexMode: indexMode,
-            workTreeMode: workTreeMode,
-            headOID: oid("d").lowercaseHex,
-            indexOID: oid("e").lowercaseHex,
-            conflictStage1Mode: nil,
-            conflictStage2Mode: nil,
-            conflictStage3Mode: nil,
-            conflictStage1OID: nil,
-            conflictStage2OID: nil,
-            conflictStage3OID: nil
         )
     }
 }

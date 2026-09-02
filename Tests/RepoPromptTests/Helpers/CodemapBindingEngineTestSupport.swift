@@ -106,30 +106,6 @@ class CodemapBindingEngineTestCase: XCTestCase {
         return record
     }
 
-    func replaceCurrentManifestWithEmpty(
-        fixture: EngineFixture,
-        runtime: CodeMapArtifactRuntime
-    ) async throws {
-        let capability = try await eligible(fixture.capabilityService.state(for: fixture.rootEpoch))
-        let pipeline = try SyntaxManager.shared.pipelineIdentity(
-            for: .swift,
-            decoderPolicy: .workspaceAutomaticV2
-        )
-        let namespace = try CodeMapRootManifestNamespace(
-            capability: capability,
-            pipelineIdentity: pipeline
-        )
-        _ = try await runtime.manifestStore.replaceCurrentManifest(
-            namespace: namespace,
-            authority: CodeMapRootManifestAuthority(
-                namespace: namespace,
-                token: capability.repositoryAuthority
-            ),
-            records: [],
-            lastAccessEpochSeconds: 42
-        )
-    }
-
     func republishManifestForCurrentAuthority(
         record: CodeMapRootManifestRecord,
         root: URL,
@@ -664,23 +640,6 @@ actor EngineManifestBindingResolutionRecorder {
             pathGeneration: candidate.pathGeneration,
             ingressGeneration: candidate.ingressGeneration
         ))
-    }
-}
-
-final class EngineUptimeClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: UInt64
-
-    init(_ value: UInt64) {
-        storage = value
-    }
-
-    var now: UInt64 {
-        lock.withLock { storage }
-    }
-
-    func set(_ value: UInt64) {
-        lock.withLock { storage = value }
     }
 }
 

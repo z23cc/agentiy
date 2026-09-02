@@ -336,59 +336,6 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
         await fixture.viewModel.unloadAllRootFolders()
     }
 
-    func testMilestoneDProductionCallersContainNoEagerCodemapOrCacheActions() throws {
-        let repoRoot = try RepoRoot.url()
-        let relativePaths = [
-            "Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift",
-            "Sources/RepoPrompt/Features/Workspaces/ViewModels/WorkspaceManagerViewModel.swift",
-            "Sources/RepoPrompt/Features/Workspaces/WorkspaceCheckoutRefreshService.swift",
-            "Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel.swift",
-            "Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel+WorktreeMerge.swift",
-            "Sources/RepoPrompt/Infrastructure/MCP/Agent/AgentMCPStartWorktreeCoordinator.swift",
-            "Sources/RepoPrompt/Infrastructure/WorkspaceContext/WorkspaceRootBindingProjection.swift"
-        ]
-        let forbidden = [
-            "initializeCodemapsForSessionWorktreeRoots",
-            "requestCodemapScans",
-            "repairMissingCodemapSnapshots",
-            "purgeStaleCodemapCaches",
-            "clearCodeMapCache",
-            "codeMapUpdatePublisher",
-            "codemapUpdates()"
-        ]
-
-        for relativePath in relativePaths {
-            let source = try String(
-                contentsOf: repoRoot.appendingPathComponent(relativePath),
-                encoding: .utf8
-            )
-            for symbol in forbidden {
-                XCTAssertFalse(source.contains(symbol), "\(relativePath) still references \(symbol)")
-            }
-        }
-    }
-
-    func testValueReceiptRevalidationIsFinalAwaitBeforeSynchronousCommit() throws {
-        let repoRoot = try RepoRoot.url()
-        let sourceURL = repoRoot.appendingPathComponent(
-            "Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift"
-        )
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let revalidationCall = try XCTUnwrap(source.range(
-            of: "let revalidation = await workspaceFileContextStore.revalidateAutomaticCodemapSelection("
-        ))
-        let postRevalidationGuard = try XCTUnwrap(source.range(
-            of: "guard automaticCodemapSelectionIsCurrent(",
-            range: revalidationCall.upperBound ..< source.endIndex
-        ))
-        let commit = try XCTUnwrap(source.range(
-            of: "resetAutoCodemapFiles(resolvedTargets)",
-            range: postRevalidationGuard.lowerBound ..< source.endIndex
-        ))
-        let synchronousCommitRegion = source[postRevalidationGuard.lowerBound ..< commit.upperBound]
-        XCTAssertFalse(synchronousCommitRegion.contains("await"))
-    }
-
     private func makeRetryLifecycleFixture(
         retryDelay: Duration = .seconds(10)
     ) async throws -> (

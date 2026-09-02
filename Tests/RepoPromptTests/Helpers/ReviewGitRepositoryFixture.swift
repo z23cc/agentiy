@@ -124,31 +124,6 @@ final class ReviewGitRepositoryFixture {
         return oid
     }
 
-    func isTracked(_ relativePath: String, at root: URL) throws -> Bool {
-        let output = try runGit(["ls-files", "--", relativePath], at: root)
-        return output.split(whereSeparator: \.isNewline).contains(Substring(relativePath))
-    }
-
-    func porcelainStatus(for relativePath: String, at root: URL) throws -> String {
-        try runGit(
-            ["status", "--porcelain=v1", "--untracked-files=all", "--", relativePath],
-            at: root
-        ).trimmingCharacters(in: .newlines)
-    }
-
-    @discardableResult
-    func createUntrackedFile(_ contents: String, at relativePath: String, root: URL) throws -> URL {
-        guard try !isTracked(relativePath, at: root) else {
-            throw NSError(
-                domain: "ReviewGitRepositoryFixture.git",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Expected untracked path: \(relativePath)"]
-            )
-        }
-        try write(contents, to: relativePath, at: root)
-        return root.appendingPathComponent(relativePath).standardizedFileURL
-    }
-
     @discardableResult
     func runGit(_ arguments: [String], at root: URL) throws -> String {
         try TestGitCommandRunner.run(
