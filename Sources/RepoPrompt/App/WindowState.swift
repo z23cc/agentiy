@@ -358,6 +358,24 @@ class WindowState: ObservableObject {
             )
         }
 
+        /// Both at once. The designated initializer has always accepted both, but the convenience
+        /// initializers offered them only separately, so a test needing a stubbed context-builder
+        /// provider *and* a domain runtime had to give one up. Giving up the runtime is not a
+        /// harmless choice: without it `WindowStateComposition` builds the workspace manager with a
+        /// nil `domainWorkspaceAuthorityClient`, and every selection write to a non-ephemeral
+        /// workspace then fails closed as `.unavailable`.
+        convenience init(
+            domainRuntime: MCPDomainRuntime,
+            contextBuilderProviderFactory: @escaping ContextBuilderAgentViewModel.ProviderFactory
+        ) {
+            self.init(
+                contextBuilderProviderFactory: Optional(contextBuilderProviderFactory),
+                loadStoredAPISettingsDataOnInit: true,
+                codexModelPollingService: .shared,
+                domainRuntimeOverride: domainRuntime
+            )
+        }
+
         convenience init(
             codexModelPollingService: CodexModelPollingService,
             loadStoredAPISettingsDataOnInit: Bool

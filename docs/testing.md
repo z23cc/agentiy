@@ -53,14 +53,16 @@ A focused green run is evidence for the named contract, not a substitute for ful
 
 Routine pipeline and integration tests should not await real codemap generation when generation correctness is not the contract. Prefer seams, fakes, synthetic artifacts, or dual-path assertions that accept either pending/not-ready codemap status or ready code-structure output while still proving routing, path shape, and leakage boundaries.
 
-For local strict codemap E2E coverage, opt in with either `RPCE_RUN_CODEMAP_E2E=1` or the marker file `/tmp/RepoPromptCE-codemap-e2e-opt-in`:
+Use the retained deterministic CodeMap tests for local coverage:
 
 ```bash
-RPCE_RUN_CODEMAP_E2E=1 make dev-test FILTER=ContextBuilderWorktreeInheritanceTests
-touch /tmp/RepoPromptCE-codemap-e2e-opt-in && make dev-test FILTER=ContextBuilderWorktreeInheritanceTests ; rm /tmp/RepoPromptCE-codemap-e2e-opt-in
+make dev-test FILTER=CodeMapGoldenTests
+make dev-test FILTER=CodeMapArtifactContainerTests
 ```
 
-Run this strict gate when changes touch CodeMap generation, syntax parsing, or Tree-sitter support. CI and routine root gates do not set this flag. This local XCTest gate is separate from the packaged-app live codemap projection-demand gate documented later in this guide.
+Run these when changes touch CodeMap generation, syntax parsing, artifact storage, or Tree-sitter support. The packaged-app live codemap projection-demand gate is documented later in this guide.
+
+Context Builder inactive-target coverage must stay within one `MCPDomainRuntime`. Windows are presentation scopes over that process-wide authority; a workspace created through one runtime cannot be appended to another window's manager as a supported handoff. Do not recreate that topology in a test with a side-channel authority client: it bypasses the runtime's routing registration and storage lease, and can only produce misleading failures. Use the retained strict-finalization tests for a real inactive target and add a runtime-level handoff contract before introducing cross-runtime coverage.
 
 ## Scale-sensitive contract gates
 
