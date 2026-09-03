@@ -353,15 +353,15 @@ final class AgentTabSession: ObservableObject {
         case activeWithoutAuthoritativeIdentity
         case staleAuthoritativeIdentity
         case nonSteerableTurn(kind: CodexTurnKind)
-        case noActiveTurn(failure: CodexAppServerClient.RequestFailure)
+        case noActiveTurn(failure: CodexSessionRequestFailure)
         case expectedTurnMismatch(
             expectedTurnID: String,
             actualTurnID: String?,
-            failure: CodexAppServerClient.RequestFailure
+            failure: CodexSessionRequestFailure
         )
         case activeTurnNotSteerable(
             turnKind: String?,
-            failure: CodexAppServerClient.RequestFailure
+            failure: CodexSessionRequestFailure
         )
     }
 
@@ -479,8 +479,19 @@ final class AgentTabSession: ObservableObject {
         runLifecycle.liveness
     }
 
-    var provider: HeadlessAgentProvider?
     var agentTask: Task<Void, Never>?
+
+    // MARK: Connection seam (ADR-0011)
+
+    /// Opaque slot the `AgentSessionConnection` implementation uses to park execution-side
+    /// state next to this cache. Presentation code never inspects it; provider controllers
+    /// no longer live on the session.
+    var connectionAttachment: (any AgentSessionConnectionAttachment)?
+    /// Latest snapshot received through `AgentSessionConnection.attach`, when the client
+    /// path is used. In-process P1 keeps `items`/`runState` authoritative.
+    var latestConnectionSnapshot: AgentSessionSnapshot?
+    /// Replay cursor to hand back on the next `attach(resume:)`.
+    var latestConnectionCursor: AgentSessionCursor?
 
     // Settings (per-tab)
     var selectedAgent: AgentProviderKind = .claudeCode
@@ -531,50 +542,25 @@ final class AgentTabSession: ObservableObject {
     var codexNativeStartupDisposition: AgentModeViewModel.CodexNativeStartupDisposition?
     var codexResumeTimeoutState: AgentModeViewModel.CodexResumeTimeoutState = .init()
     var codexToolPreferencesGeneration: Int = 0
-    var codexController: (any CodexSessionControlling)? {
-        didSet {
-            let oldIdentity = oldValue.map { ObjectIdentifier($0) }
-            let newIdentity = codexController.map { ObjectIdentifier($0) }
-            guard oldIdentity != newIdentity else { return }
-            resetCodexHookGateBinding()
-            codexControllerGeneration = UUID()
-            codexAuthoritativeActiveTurn = nil
-            codexAnonymousActiveTurn = nil
-            codexRoutingObservedTurnID = nil
-            // A replaced controller can never deliver the lifecycle of a turn the previous
-            // one accepted, so a surviving blocker would gate the fallback pump on an event
-            // that is never coming. Disposition of the entries themselves belongs to the
-            // coordinator, which retires the queue with the controller.
-            codexFallbackHookGateOwnerBlocker = nil
-        }
-    }
 
-    private(set) var codexControllerGeneration = UUID()
-    /// The permission profile the current Codex controller was created with.
-    /// Used to detect when MCP control changes require controller recycling.
-    var codexControllerPermissionProfile: AgentModeViewModel.AgentPermissionProfile?
-    /// The task label kind the current Codex controller was created with.
-    /// Used to detect when role-specific native tool overrides require controller recycling.
-    var codexControllerTaskLabelKind: AgentModelCatalog.TaskLabelKind?
-    /// The launch/execution directory pair the current Codex controller was created with.
-    /// Controller replacement key: the provider is recycled when either directory changes,
-    /// e.g. when a session worktree binding moves the execution cwd.
-    var codexControllerWorkspacePaths: CodexRuntimeWorkspacePaths?
-    struct CodexControllerFeatureState: Equatable {
-        var computerUseEnabled: Bool
-        var goalSupportEnabled: Bool
-        var reasoningSummariesEnabled: Bool
-        var memoriesEnabled: Bool
+    /// Presentation-side reaction to the execution side replacing the Codex controller:
+    /// a replaced controller can never deliver the lifecycle of a turn the previous one
+    /// accepted, so every piece of turn identity the old controller owned is dropped.
+    /// Disposition of fallback-queue entries belongs to the coordinator, which retires
+    /// the queue with the controller.
+    func handleCodexControllerReplaced() {
+        resetCodexHookGateBinding()
+        codexAuthoritativeActiveTurn = nil
+        codexAnonymousActiveTurn = nil
+        codexRoutingObservedTurnID = nil
+        codexFallbackHookGateOwnerBlocker = nil
     }
 
     var pendingCodexComputerUseActivation: AgentModeViewModel.CodexComputerUseActivation?
-    var codexControllerFeatureState: CodexControllerFeatureState?
     var wantsCodexComputerUseForNextTurn: Bool {
         pendingCodexComputerUseActivation != nil
     }
 
-    var claudeController: (any NativeAgentRuntimeControlling)?
-    var acpController: ACPAgentSessionController?
     var codexEventTask: Task<Void, Never>?
     var codexEventTaskRunID: UUID?
     var codexLastEventAt: Date?
@@ -1520,6 +1506,7 @@ final class AgentTabSession: ObservableObject {
         case clearedChat
         case stressHarnessReset
         case testOverride
+        case hostAttach
     }
 
     func setItemsSilently(_ items: [AgentChatItem], reason: SilentItemReplacementReason) {

@@ -1,12 +1,17 @@
 [workspace]
 members = [
     "crates/proto",
+    "crates/agent_session_log",
     "crates/runtime",
     "crates/ffi",
     "tools/xtask",
+    # ADR-0011 P7 (design §4.1 / §8): Rust `agentry-mcp agent-host` only. Not a
+    # default-member and not a UniFFI product crate — same pattern as xtask.
+    "bins/agentry-mcp",
 ]
 default-members = [
     "crates/proto",
+    "crates/agent_session_log",
     "crates/runtime",
     "crates/ffi",
 ]
@@ -21,7 +26,17 @@ publish = false
 
 [workspace.dependencies]
 agentry-proto = { path = "crates/proto", version = "=0.1.0" }
+# ADR-0011 / design §7.2: the only implementation of the Agent Session Host event log.
+agentry-agent-session-log = { path = "crates/agent_session_log", version = "=0.1.0" }
 agentry-runtime = { path = "crates/runtime", version = "=0.1.0" }
+# ADR-0009 / ADR-0011 P2 (design §11 "编解码归属"): the agent-host-v1 wire protocol and event-log
+# records are Protobuf authored in rust/crates/proto/schema/agent_host_v1.proto. `prost` is the only
+# runtime codec (Rust-only; Swift never links a protobuf runtime). `protox` is a pure-Rust protoc
+# replacement used exclusively by xtask so generation needs no system `protoc`; `prost-build` turns
+# its descriptor set into the checked-in, byte-identical `agent_host_v1.rs` (ADR-0007).
+prost = "=0.14.4"
+prost-build = "=0.14.4"
+protox = "=0.9.1"
 # TD-2 (textdecode-policy-v2): hybrid strict-UTF-8 fast path + chardetng fallback, decoded via
 # encoding_rs (docs/designs/textdecode-policy-v2-2026-08-22.md §4.2). Both Mozilla-maintained,
 # both already covered by rust/deny.toml's license allow-list (Apache-2.0/MIT) -- no policy-file

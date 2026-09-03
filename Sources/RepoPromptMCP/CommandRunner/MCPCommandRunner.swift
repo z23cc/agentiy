@@ -813,6 +813,8 @@ actor MCPCommandRunner {
           agent_run op=poll session_ids=["<uuid1>","<uuid2>","<uuid3>"]
           agent_run op=steer session_id="<uuid>" message="Now fix it" wait=true
           agent_run op=respond session_id="<session-uuid>" interaction_id="<id>" response="accept"
+          agent_run op=attach session_id="<session-uuid>"
+          agent_run op=detach session_id="<session-uuid>"
 
         ═════════════════════════════════════════════════════════════════
                             OUTPUT REDIRECT

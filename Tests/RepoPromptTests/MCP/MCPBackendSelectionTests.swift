@@ -5,10 +5,10 @@ import XCTest
 
 final class MCPBackendSelectionTests: XCTestCase {
     func testDecisionRecordsFinalBackendAndProbeBudget() {
-        let explicit = MCPBackendSelection.decide(requested: .headless) {
+        let explicit = MCPBackendSelection.decide(requested: .headless, appIsAvailable: {
             XCTFail("explicit backends must not probe")
             return true
-        }
+        })
         XCTAssertEqual(
             explicit,
             MCPBackendDecision(requested: .headless, resolved: .headless, probeCount: 0)
@@ -16,10 +16,10 @@ final class MCPBackendSelectionTests: XCTestCase {
         XCTAssertTrue(explicit.isFinal)
 
         var probeCount = 0
-        let automatic = MCPBackendSelection.decide(requested: .auto) {
+        let automatic = MCPBackendSelection.decide(requested: .auto, appIsAvailable: {
             probeCount += 1
             return false
-        }
+        })
         XCTAssertEqual(automatic.resolved, .headless)
         XCTAssertEqual(automatic.probeCount, 1)
         XCTAssertEqual(probeCount, 1)
@@ -51,10 +51,10 @@ final class MCPBackendSelectionTests: XCTestCase {
 
     func testAutoSelectsExactlyOnceBeforeSessionComposition() {
         var probeCount = 0
-        let selected = MCPBackendSelection.resolve(requested: .auto) {
+        let selected = MCPBackendSelection.resolve(requested: .auto, appIsAvailable: {
             probeCount += 1
             return true
-        }
+        })
 
         XCTAssertEqual(selected, .app)
         XCTAssertEqual(probeCount, 1)
@@ -65,6 +65,20 @@ final class MCPBackendSelectionTests: XCTestCase {
             MCPBackendSelection.resolve(requested: .auto, appIsAvailable: { false }),
             .headless
         )
+    }
+
+    func testAutoKeepsAppWhenWorkspaceLeaseHasLiveGUIHolder() {
+        var socketProbes = 0
+        let selected = MCPBackendSelection.resolve(
+            requested: .auto,
+            appIsAvailable: {
+                socketProbes += 1
+                return false
+            },
+            liveGUIWorkspaceHolder: { true }
+        )
+        XCTAssertEqual(selected, .app)
+        XCTAssertEqual(socketProbes, 0)
     }
 
     func testAvailabilityProbeConnectsWithoutSendingProtocolBytes() throws {

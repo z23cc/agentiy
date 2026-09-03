@@ -84,10 +84,12 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
         let defaultWaitSeconds = Int(MCPTimeoutPolicy.agentLifecycleDefaultWaitSeconds)
         let messageDescription = "[start, steer] Instruction text. Required for start and steer. If sharing an exported plan, include the path/instruction directly in this text."
         var properties: OrderedDictionary<String, JSONSchema> = [
-            "op": .string(description: "Operation.", enum: ["start", "poll", "wait", "cancel", "steer", "respond"]),
+            "op": .string(description: "Operation.", enum: ["start", "poll", "wait", "cancel", "steer", "respond", "attach", "detach"]),
             "message": .string(description: messageDescription),
             "model_id": .string(description: "[start] Role label from agent_manage.list_agents task_labels (explore, engineer, pair, design — resolved via global role defaults), or an explicit compound model_id from agents[].models[].model_id to pin an exact target. Defaults to pair when omitted."),
-            "session_id": .string(description: "[poll, wait, cancel, steer, respond] Session UUID returned by a prior start/steer response. Do not fabricate it. Not accepted by start — use steer to continue an existing session."),
+            "session_id": .string(description: "[poll, wait, cancel, steer, respond, attach, detach] Session UUID returned by a prior start/steer/attach response. Do not fabricate it. Not accepted by start — use steer to continue or attach to join an existing host session."),
+            "resume_cursor": .number(description: "[attach] Last delivered cursor to resume from. Omit for a full snapshot."),
+            "resume_generation": .string(description: "[attach] Hex generation token from a prior attach. Pair with resume_cursor."),
             "session_ids": .array(description: "[wait, poll] Array of session UUIDs. For wait: returns when first session reaches interesting state. For poll: returns all current snapshots. Mutually exclusive with session_id.", items: .string()),
             "session_name": .string(description: "[start] Display name for a new session."),
             "workflow_id": .string(description: "[start, steer, respond] Workflow ID. Mutually exclusive with workflow_name."),
@@ -131,7 +133,7 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
 
             Role labels resolve through the effective global role-default mapping; see the top-level `task_labels` array from `agent_manage.list_agents` for the authoritative label→model mapping. If `model_id` is omitted on `start`, RepoPrompt uses the `pair` role. To pin an exact agent+model+effort target, pass a specific compound `model_id` from `agents[].models[].model_id` in the same response.
 
-            **Operations**: start | poll | wait | cancel | steer | respond
+            **Operations**: start | poll | wait | cancel | steer | respond | attach | detach
 
             - `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Omit `model_id` to use the `pair` role, or pass `model_id` with a role label (resolved via the global role-default mapping in `agent_manage.list_agents` `task_labels`) or an explicit compound `model_id` from `agents[].models[].model_id`. When started from an Agent Mode run, the new child session inherits the source session's worktree bindings by default; pass `inherit_worktree=false` to keep parent session threading but skip worktree inheritance. Optional start-only worktree args can bind the new session to an existing worktree (`worktree`/`worktree_id`) or create an app-managed worktree (`worktree_create=true`) before provider startup; explicit worktree args take precedence, suppress parent inheritance, and bind only the requested worktree. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default \(defaultWaitSeconds)). Pass `detach: true` to return immediately.
             - `poll`: Return current snapshot immediately. Accepts `session_id` (single) or `session_ids` (array — returns all current snapshots).
@@ -139,6 +141,8 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
             - `cancel`: Stop an active agent run. Only valid when the run is `running` or `waiting_for_input`. Requires `session_id`.
             - `steer`: Continue an existing agent session by sending a follow-up instruction to the `session_id` returned by `start`. If the run is still active, the instruction is steered into that run; if the last run already finished or the MCP wait/control handle expired, RepoPrompt reactivates the existing Agent session and starts the next run in the same session when it still exists. Pass `wait: true` (or `timeout_seconds`) to block until the steered run finishes or needs input. Do NOT use `steer` when status is `waiting_for_input` — use `respond` instead.
             - `respond`: Resolve the current pending interaction. Requires `session_id` and the exact `interaction_id` from the latest snapshot. For approvals, send the advertised choice in the top-level scalar `response` field, for example `response="accept"`. For MCP elicitation, use `response` (`accept`, `decline`, or `cancel`) plus optional object `content` and `meta`.
+            - `attach`: Join a host-owned session as a second client (same `session_id` the GUI uses). Returns a wait-compatible snapshot plus `replay`, `delivery_cursor`, and `generation`. Optional `resume_cursor` / `resume_generation` continue the event stream. After attach, `wait` / `poll` / `respond` work on this handle.
+            - `detach`: Unsubscribe this MCP handle from the host session. Execution continues; use `attach` to rejoin.
 
             **session_id lifecycle**: `start` creates a new session and returns `session_id` in the response. All subsequent operations on that run require passing the same `session_id` back. Do NOT invent session IDs — always use the value returned by `start`.
 
@@ -158,6 +162,8 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
                 **cancel**: session_id (required)
                 **steer**: session_id (required, from a prior `start`/`steer` response), message (required), wait?, timeout_seconds?, workflow_id|workflow_name?
                 **respond**: session_id (required), interaction_id (required), response? (top-level scalar string; approval example: response="accept"), answers?, amendment?, content?, meta?
+                **attach**: session_id (required), resume_cursor?, resume_generation?
+                **detach**: session_id (required)
                 """,
                 properties: properties,
                 required: ["op"]

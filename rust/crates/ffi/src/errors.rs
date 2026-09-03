@@ -217,6 +217,42 @@ pub enum CoreError {
     WatcherScopeClosed,
     #[error("{message}")]
     WatcherInvalidRequest { message: String },
+    // ADR-0011 P2: agent-host-v1 codec (design §5.2 fail-closed framing) and the session event log
+    // (design §7.2). The codec variants are also what a typed mirror raises for an enum value this
+    // build does not know (ADR-0006: refuse, never alias to Unspecified).
+    #[error("agent-host frame is malformed: {message}")]
+    AgentHostFrameMalformed { message: String },
+    #[error("agent-host payload of {actual} bytes exceeds the {maximum}-byte cap")]
+    AgentHostFrameTooLarge { actual: u64, maximum: u64 },
+    #[error("agent session log {operation}: {message}")]
+    AgentSessionLogIo { operation: String, message: String },
+    #[error("agent session log file not found: {path}")]
+    AgentSessionLogNotFound { path: String },
+    #[error("agent session log file is invalid: {message}")]
+    AgentSessionLogInvalidFile { message: String },
+    #[error(
+        "agent session log schema version {found} is newer than the supported version {supported}"
+    )]
+    AgentSessionLogUnsupportedSchemaVersion { found: u16, supported: u16 },
+    #[error("agent session log belongs to session {found}, expected {expected}")]
+    AgentSessionLogSessionMismatch { expected: String, found: String },
+    #[error("invalid agent session id {value:?}")]
+    AgentSessionLogInvalidSessionId { value: String },
+    #[error("agent session log record of {actual} bytes exceeds the {maximum}-byte cap")]
+    AgentSessionLogRecordTooLarge { actual: u64, maximum: u64 },
+    #[error("agent session log cursor {cursor} is outside 1..={next_cursor}")]
+    AgentSessionLogCursorOutOfRange { cursor: u64, next_cursor: u64 },
+    #[error("agent session log record {cursor} does not decode: {message}")]
+    AgentSessionLogMalformedRecord { cursor: u64, message: String },
+    #[error("agent session log snapshot rejected: {message}")]
+    AgentSessionLogSnapshotRejected { message: String },
+    #[error("agent session log handle is closed")]
+    AgentSessionLogClosed,
+    /// ADR-0011 P6-a: the run-lifecycle reducer objects (`AgentRun*V1`) reject malformed identity
+    /// text (UUIDs) instead of guessing. Typed enum mirrors have no `Unspecified` member, so this is
+    /// the only input the pure reducers can refuse.
+    #[error("{message}")]
+    AgentRunLifecycleInvalidRequest { message: String },
 }
 
 impl From<IdentifierError> for CoreError {

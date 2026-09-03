@@ -4199,6 +4199,18 @@ actor WorkspaceCodemapBindingEngine {
                 // malformed request). Same reasoning as the inventory-scope-v1 group directly
                 // above: none of these indicate the Rust runtime itself is broken.
                 return false
+            case .agentHostFrameMalformed, .agentHostFrameTooLarge,
+                 .agentSessionLogIo, .agentSessionLogNotFound, .agentSessionLogInvalidFile,
+                 .agentSessionLogUnsupportedSchemaVersion, .agentSessionLogSessionMismatch,
+                 .agentSessionLogInvalidSessionId, .agentSessionLogRecordTooLarge,
+                 .agentSessionLogCursorOutOfRange, .agentSessionLogMalformedRecord,
+                 .agentSessionLogSnapshotRejected, .agentSessionLogClosed,
+                 .agentRunLifecycleInvalidRequest:
+                // ADR-0011 P2/P6-a: per-call agent-host-v1 codec / session-log / run-lifecycle
+                // reducer errors scoped to one frame, one log file, or one malformed reducer
+                // input; the codemap engine never issues them and none indicate the Rust runtime
+                // itself is broken.
+                return false
             }
         }
         if case CodeMapArtifactBuildCoordinatorError.flightWatchdogTimedOut = error {

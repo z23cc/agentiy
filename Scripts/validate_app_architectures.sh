@@ -30,8 +30,10 @@ command -v "$LIPO" >/dev/null 2>&1 || fail "missing lipo command: $LIPO"
 
 MAIN="$APP_BUNDLE/Contents/MacOS/Agentry"
 HELPER="$APP_BUNDLE/Contents/MacOS/agentry-mcp"
+HOST_HELPER="$APP_BUNDLE/Contents/MacOS/agentry-agent-host"
 require_regular_executable "$MAIN"
 require_regular_executable "$HELPER"
+require_regular_executable "$HOST_HELPER"
 
 macho_count=0
 while IFS= read -r -d '' path; do

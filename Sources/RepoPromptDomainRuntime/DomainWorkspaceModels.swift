@@ -8,6 +8,21 @@ package enum DomainWorkspaceStoragePath {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return "Workspace-\(safeName)-\(id.uuidString)"
     }
+
+    /// Parse `Workspace-{name}-{uuid}` or a bare UUID folder name.
+    package static func parse(_ directoryName: String) -> (name: String, id: UUID)? {
+        if let id = UUID(uuidString: directoryName) {
+            return ("", id)
+        }
+        guard directoryName.hasPrefix("Workspace-"), directoryName.count > "Workspace-".count + 36 else {
+            return nil
+        }
+        let suffix = String(directoryName.suffix(36))
+        guard let id = UUID(uuidString: suffix) else { return nil }
+        var name = String(directoryName.dropFirst("Workspace-".count).dropLast(36))
+        if name.hasSuffix("-") { name.removeLast() }
+        return (name, id)
+    }
 }
 
 package struct DomainContextIdentity: Codable, Hashable {
@@ -61,12 +76,12 @@ package enum DomainAuthorityHealth: Codable, Equatable {
     }
 }
 
-package enum DomainWorkspaceTabLocation: String, Codable, Equatable, Hashable, Sendable {
+package enum DomainWorkspaceTabLocation: String, Codable, Equatable, Hashable {
     case composed
     case stashed
 }
 
-package struct DomainProtectedAgentIdentity: Codable, Equatable, Hashable, Sendable {
+package struct DomainProtectedAgentIdentity: Codable, Equatable, Hashable {
     package let tabID: UUID
     package let location: DomainWorkspaceTabLocation
     package let activeAgentSessionID: UUID?
@@ -300,13 +315,12 @@ package enum DomainWorkspaceSelectionDigest {
             throw DomainWorkspaceDocumentError.invalidContext(contextID)
         }
 
-        let selection: Any
-        if let nested = context["selection"] as? [String: Any] {
-            selection = nested
+        let selection: Any = if let nested = context["selection"] as? [String: Any] {
+            nested
         } else {
             // Older documents used selectedPaths directly on the tab. Normalize that legacy
             // shape into the current selection object before hashing it.
-            selection = [
+            [
                 "selectedPaths": context["selectedPaths"] as? [String] ?? [],
                 "manualCodemapPaths": [],
                 "autoCodemapPaths": [],

@@ -69,7 +69,7 @@ final class HeadlessAgentModeRunner {
                 supportsFollowUp: false,
                 notifyTurnComplete: false,
                 prepareProviderState: {
-                    session.provider = nil
+                    session.inProcessExecution.provider = nil
                     session.clearRunID(ifCurrent: runID)
                     return nil
                 }
@@ -83,9 +83,9 @@ final class HeadlessAgentModeRunner {
                 ? nil
                 : session.selectedModelRaw
         )
-        session.provider = provider
+        session.inProcessExecution.provider = provider
         session.installRunAttemptTerminalResources(ownership: ownership) { terminalState in
-            session.provider = nil
+            session.inProcessExecution.provider = nil
             session.clearRunID(ifCurrent: runID)
             return {
                 switch terminalState {
@@ -154,7 +154,7 @@ final class HeadlessAgentModeRunner {
             supportsFollowUp: false,
             notifyTurnComplete: false,
             prepareProviderState: {
-                session.provider = nil
+                session.inProcessExecution.provider = nil
                 session.clearRunID(ifCurrent: runID)
                 return nil
             }
@@ -256,7 +256,7 @@ final class HeadlessAgentModeRunner {
             supportsFollowUp: false,
             notifyTurnComplete: notifyTurnComplete,
             prepareProviderState: {
-                session.provider = nil
+                session.inProcessExecution.provider = nil
                 session.clearRunID(ifCurrent: runID)
                 return nil
             }

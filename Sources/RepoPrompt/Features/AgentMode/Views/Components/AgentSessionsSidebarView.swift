@@ -546,6 +546,43 @@ struct AgentModeSessionsListView: View {
                         .foregroundColor(.accentColor)
                     }
 
+                    if !snapshot.attachableHostSessions.isEmpty {
+                        Divider()
+                            .padding(.vertical, dividerVerticalPadding)
+                        VStack(alignment: .leading, spacing: listRowSpacing) {
+                            Text("Host")
+                                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, archivedHeaderHorizontalPadding)
+                            ForEach(snapshot.attachableHostSessions) { listed in
+                                Button {
+                                    Task {
+                                        await agentModeVM.attachAndOpenHostSession(sessionID: listed.sessionID)
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text(listed.sessionName.isEmpty ? listed.sessionID.uuidString : listed.sessionName)
+                                            .font(fontPreset.swiftUIFont(sizeAtNormal: 13, weight: .medium))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        if listed.attachedClientCount > 0 {
+                                            Text("\(listed.attachedClientCount)")
+                                                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .regular))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text(listed.runState.rawValue)
+                                            .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .regular))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.horizontal, listHorizontalPadding)
+                                    .padding(.vertical, 4)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
                     if !snapshot.archivedSessionTabsForHeader.isEmpty {
                         Divider()
                             .padding(.vertical, dividerVerticalPadding)

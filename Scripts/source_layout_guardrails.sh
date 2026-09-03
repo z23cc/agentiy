@@ -68,6 +68,7 @@ allowed_rust_top_level_entries=(
   "Cargo.toml"
   "audit.toml"
   "benchmarks"
+  "bins"
   "crates"
   "deny.toml"
   "ffi-contract"
@@ -82,7 +83,7 @@ if [[ -d rust ]]; then
     <(printf '%s\n' "${allowed_rust_top_level_entries[@]}" | sort))"
   if [[ -n "$unexpected_rust_entries" ]]; then
     printf '%s\n' "$unexpected_rust_entries" >&2
-    fail "unexpected top-level rust path; experiments belong under rust/spikes and integrated crates under rust/crates"
+    fail "unexpected top-level rust path; experiments belong under rust/spikes, binaries under rust/bins, and integrated crates under rust/crates"
   fi
 fi
 
@@ -1072,6 +1073,7 @@ allowed_tracked_docs=(
   "docs/architecture/adr-0008-migration-economics-benchmark-gate.md"
   "docs/architecture/adr-0009-data-plane-schema-and-protocol-authority.md"
   "docs/architecture/adr-0010-vcs-backend-cli-subprocess-canonical.md"
+  "docs/architecture/adr-0011-agent-session-host.md"
   "docs/architecture/agentry-rewrite-charter.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"
@@ -1097,6 +1099,7 @@ allowed_tracked_docs=(
   "docs/privacy/telemetry.md"
   "docs/releasing.md"
   "docs/testing.md"
+  "docs/spec/agent-session-host-v1-design.md"
   "docs/spec/headless-mcp-domain-runtime-m0-contracts.md"
   "docs/spec/headless-mcp-domain-runtime-m0-editflowperf-baseline.json"
   "docs/spec/headless-mcp-domain-runtime-m2-context-authority.md"

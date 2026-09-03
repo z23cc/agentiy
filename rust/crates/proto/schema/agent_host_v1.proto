@@ -1,0 +1,1219 @@
+// Agentry Agent Session Host wire protocol and event-log schema, version 1.
+//
+// FROZEN AT END OF PHASE P2 (docs/spec/agent-session-host-v1-design.md §8, §12;
+// docs/architecture/adr-0011-agent-session-host.md decisions 3, 5, 6, 9).
+//
+// This file is the single authoring point for two long-term contracts (ADR-0009: the data plane is
+// Protobuf, `agentry-proto` owns the schema):
+//
+//   1. The client <-> host wire protocol carried over a Unix domain socket as length-prefixed
+//      frames (`ClientMessage` / `HostMessage`).
+//   2. The per-session event-log record (`AgentSessionEvent`) and snapshot (`AgentSessionSnapshot`)
+//      persisted by the `agentry-agent-session-log` crate.
+//
+// Compatibility rules (ADR-0006 fail-closed schema policy):
+//
+//   * Fields are only ever ADDED. Existing field numbers, names, and semantics never change, and a
+//     retired field number is reserved, never reused.
+//   * Any incompatible change to the wire protocol requires a `protocol_version` bump (the `Hello`
+//     / `Welcome` handshake rejects mismatches with `HANDSHAKE_REJECT_REASON_PROTOCOL_VERSION_MISMATCH`).
+//   * Any incompatible change to the on-disk record or snapshot body requires a log
+//     `schema_version` bump in the file header owned by `agentry-agent-session-log`; an older
+//     runtime that opens a newer log refuses to load it rather than guessing.
+//   * Every enum has an `_UNSPECIFIED = 0` member; a receiver that observes an enum number it does
+//     not know treats the message as unrecognised (it must never map it to a known member).
+//
+// Wire-field rules (design §5.2):
+//
+//   * Identity is opaque: sessions, workspaces, worktrees, interactions, artifacts, operations and
+//     clients are referenced by caller- or host-generated identifiers (UUID strings or opaque
+//     bytes). No filesystem path is ever a resolvable reference on the wire.
+//   * Provider launch details (command paths, environment, credentials) are never on the wire.
+//     Debug builds may carry a `credential_envelope_id` (design §11 row 4), which is an opaque
+//     handle -- never plaintext.
+//   * Timestamps are RFC 3339 strings in UTC (`2026-09-03T12:34:56.789Z`).
+//   * `generation` values are opaque bytes; clients compare them only for equality.
+//   * Large objects are referenced by `ArtifactRef { artifact_id, byte_length, digest_sha256 }`.
+//   * No Swift or Rust internal type name appears in this schema; names mirror the provider-neutral
+//     vocabulary of the existing Agent Mode domain contracts so that both sides translate 1:1.
+//
+// Framing (design §5.2): every frame is `u32 big-endian payload length || payload`. The payload is
+// exactly one encoded `ClientMessage` (client -> host) or `HostMessage` (host -> client). The
+// payload length is capped at 1 MiB (1_048_576 bytes); a receiver that reads a larger prefix closes
+// the connection. Snapshot bodies larger than one frame are streamed with `SnapshotChunk` frames
+// whose `data` never exceeds 512 KiB. The Rust constants live in `agentry_proto::agent_host`.
+//
+// Codec ownership (design §11 "编解码归属"): only Rust encodes or decodes these messages. Swift hosts
+// and clients call the UniFFI exports in `rust/crates/ffi` and receive typed records.
+
+syntax = "proto3";
+
+package agentry.agent_host.v1;
+
+// ============================================================================================
+// Top-level frames
+// ============================================================================================
+
+// One frame from a client (GUI, CLI, or MCP process) to the host.
+message ClientMessage {
+  oneof body {
+    // Must be the first frame on a new connection.
+    Hello hello = 1;
+    // Any subsequent frame.
+    CommandRequest command = 2;
+  }
+}
+
+// One frame from the host to a client.
+message HostMessage {
+  oneof body {
+    // Successful handshake reply; first frame on the connection.
+    Welcome welcome = 1;
+    // Handshake refusal; the host closes the connection after sending it.
+    HandshakeRejected handshake_rejected = 2;
+    // Reply to a `CommandRequest`, correlated by `request_id`.
+    CommandResponse response = 3;
+    // Live or replayed event for a session the client is attached to.
+    EventNotification event = 4;
+    // Snapshot stream header (see `AttachResult`).
+    SnapshotBegin snapshot_begin = 5;
+    // Snapshot stream body chunk (`data` <= 512 KiB).
+    SnapshotChunk snapshot_chunk = 6;
+    // Snapshot stream trailer; live events resume after it.
+    SnapshotEnd snapshot_end = 7;
+    // The host dropped events for this client; it must re-attach and take a fresh snapshot.
+    ResnapshotRequired resnapshot_required = 8;
+    // Unsolicited host-level notice (shutdown, update pending, session list changed).
+    HostNotice notice = 9;
+  }
+}
+
+// ============================================================================================
+// Handshake (design §5.3)
+// ============================================================================================
+
+// Capabilities are advertised by both sides in the handshake. Clients list what they can do
+// (notably `CAPABILITY_CAN_PRESENT`); hosts list which optional commands they support.
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  // Client: can present interactions (approvals, questions, elicitations) to a human. A host only
+  // routes `InteractionRequested` prompts to clients that advertise this; when no attached client
+  // can present, `PermissionPolicy.approval_policy` decides the fallback.
+  CAPABILITY_CAN_PRESENT = 1;
+  // Client: accepts `SnapshotBegin`/`SnapshotChunk`/`SnapshotEnd` streams. Required by v1 clients.
+  CAPABILITY_SNAPSHOT_STREAMING = 2;
+  // Host: supports `HostControl { prepare_update }`.
+  CAPABILITY_PREPARE_UPDATE = 3;
+  // Host: supports `SessionSpec.parent_session_id` forks (`ForkedFrom` records).
+  CAPABILITY_FORK = 4;
+  // Host: supports importing legacy Swift-owned sessions (`Imported` records).
+  CAPABILITY_IMPORT = 5;
+}
+
+// Identity of the executable on either end of the connection. Used to refuse mixing a debug GUI
+// with a release host (or vice versa) and to surface who is connected in diagnostics.
+message ExecutableIdentity {
+  // Bundle identifier of the containing app, e.g. the debug and release bundles differ.
+  string bundle_identifier = 1;
+  // Executable name, e.g. `agentry-mcp`.
+  string executable_name = 2;
+  // Marketing version string.
+  string version = 3;
+  // Build number string.
+  string build_number = 4;
+  // Process identifier; informational only.
+  uint32 pid = 5;
+  // Code-signing team identifier; empty when ad-hoc signed or unsigned.
+  string code_signing_team_identifier = 6;
+}
+
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  CLIENT_KIND_GUI = 1;
+  CLIENT_KIND_CLI = 2;
+  CLIENT_KIND_MCP = 3;
+  CLIENT_KIND_TEST = 4;
+}
+
+// First client frame.
+message Hello {
+  // Must equal the host's protocol version (1 for this file).
+  uint32 protocol_version = 1;
+  // `CoreBuildFingerprint` of the Rust core linked into the client (ADR-0007). The host compares it
+  // with its own; a mismatch is rejected because both sides must share one codec build.
+  string build_fingerprint = 2;
+  ExecutableIdentity executable = 3;
+  repeated Capability capabilities = 4;
+  // Caller-generated UUID for this connection; echoed in `Welcome.client_id`.
+  string client_id = 5;
+  ClientKind client_kind = 6;
+}
+
+// Successful handshake reply.
+message Welcome {
+  uint32 protocol_version = 1;
+  // The host's `CoreBuildFingerprint`; clients re-check it (bidirectional verification).
+  string build_fingerprint = 2;
+  ExecutableIdentity executable = 3;
+  repeated Capability capabilities = 4;
+  // UUID minted once per host process lifetime; changes when the host restarts.
+  string host_instance_id = 5;
+  // Echo of `Hello.client_id`.
+  string client_id = 6;
+  // Advertised framing limits so clients never hard-code them (1 MiB / 512 KiB in v1).
+  uint32 maximum_frame_bytes = 7;
+  uint32 maximum_snapshot_chunk_bytes = 8;
+  // RFC 3339 host start time.
+  string host_started_at = 9;
+}
+
+enum HandshakeRejectReason {
+  HANDSHAKE_REJECT_REASON_UNSPECIFIED = 0;
+  HANDSHAKE_REJECT_REASON_PROTOCOL_VERSION_MISMATCH = 1;
+  HANDSHAKE_REJECT_REASON_BUILD_FINGERPRINT_MISMATCH = 2;
+  HANDSHAKE_REJECT_REASON_EXECUTABLE_IDENTITY_MISMATCH = 3;
+  HANDSHAKE_REJECT_REASON_HOST_SHUTTING_DOWN = 4;
+  HANDSHAKE_REJECT_REASON_TOO_MANY_CLIENTS = 5;
+  HANDSHAKE_REJECT_REASON_MISSING_CAPABILITY = 6;
+  HANDSHAKE_REJECT_REASON_MALFORMED_HELLO = 7;
+}
+
+message HandshakeRejected {
+  HandshakeRejectReason reason = 1;
+  string detail = 2;
+  uint32 host_protocol_version = 3;
+  string host_build_fingerprint = 4;
+}
+
+enum HostNoticeKind {
+  HOST_NOTICE_KIND_UNSPECIFIED = 0;
+  // The host will close all connections after `HostNotice.deadline_at`.
+  HOST_NOTICE_KIND_SHUTTING_DOWN = 1;
+  // A `prepare_update` checkpoint completed; clients should expect a restart.
+  HOST_NOTICE_KIND_UPDATE_PENDING = 2;
+  // The set of sessions changed (started, stopped, imported); clients may re-run `list_sessions`.
+  HOST_NOTICE_KIND_SESSION_LIST_CHANGED = 3;
+}
+
+message HostNotice {
+  HostNoticeKind kind = 1;
+  string detail = 2;
+  // RFC 3339; set for `SHUTTING_DOWN`.
+  string deadline_at = 3;
+  // Set when the notice concerns one session.
+  string session_id = 4;
+}
+
+// ============================================================================================
+// Commands (design §5.4)
+// ============================================================================================
+
+// Idempotency key carried by every mutating command. `operation_id` is a caller-generated UUID;
+// `argument_fingerprint` is the lowercase hex SHA-256 of the command's deterministic encoding with
+// the `key` field cleared (computed by `agentry_proto::agent_host::command_fingerprint`, exposed to
+// Swift through the FFI). The host records `CommandAccepted { operation_id, argument_fingerprint }`
+// before executing; a retry with the same id and fingerprint returns the recorded settlement, the
+// same id with a different fingerprint is an `OperationConflict`.
+message MutationKey {
+  string operation_id = 1;
+  string argument_fingerprint = 2;
+}
+
+message CommandRequest {
+  // Per-connection UUID echoed in `CommandResponse.request_id`.
+  string request_id = 1;
+  oneof command {
+    ListSessions list_sessions = 10;
+    Attach attach = 11;
+    Detach detach = 12;
+    Start start = 13;
+    Steer steer = 14;
+    Interrupt interrupt = 15;
+    RespondInteraction respond_interaction = 16;
+    Stop stop = 17;
+    HostControl host_control = 18;
+  }
+}
+
+// Read-only. Lists sessions the host knows about (running, waiting, and -- when requested --
+// terminal ones still on disk).
+message ListSessions {
+  bool include_terminal = 1;
+  // Optional filter by workspace.
+  string workspace_id = 2;
+}
+
+// Read-only for the session; registers this connection as a subscriber. The host answers with an
+// `AttachResult` and, when a snapshot is needed, a snapshot stream, then delivers events in cursor
+// order. Idempotent: attaching twice replaces the previous subscription.
+message Attach {
+  string session_id = 1;
+  // Last cursor the client has already applied; absent means "from the beginning".
+  optional uint64 resume_cursor = 2;
+  // Generation the `resume_cursor` belongs to. A different current generation yields
+  // `ATTACH_REPLAY_UNAVAILABLE` and a full snapshot.
+  bytes resume_generation = 3;
+}
+
+message Detach {
+  string session_id = 1;
+}
+
+// Mutating. Creates and starts a session. `spec.session_id` is caller-generated so a retried
+// `Start` with the same `key` is idempotent and a colliding session id with a different key is a
+// rejection (`COMMAND_REJECTION_REASON_SESSION_EXISTS`).
+message Start {
+  MutationKey key = 1;
+  SessionSpec spec = 2;
+}
+
+enum SteerDelivery {
+  STEER_DELIVERY_UNSPECIFIED = 0;
+  // Queue the message; it starts the next turn once the current one ends.
+  STEER_DELIVERY_QUEUE_FOR_NEXT_TURN = 1;
+  // Deliver into the running turn if the provider supports mid-turn steering, else queue.
+  STEER_DELIVERY_INJECT_INTO_CURRENT_TURN = 2;
+}
+
+// Mutating. Sends a user message to a session.
+message Steer {
+  MutationKey key = 1;
+  string session_id = 2;
+  UserMessage message = 3;
+  SteerDelivery delivery = 4;
+}
+
+// Mutating. Interrupts the in-flight turn (mirrors the `interruptTurn` cancellation intent). The
+// session stays alive and resumable; use `Stop` to terminate the runtime.
+message Interrupt {
+  MutationKey key = 1;
+  string session_id = 2;
+  // Turn the caller believes is running; empty means "whatever is running".
+  string turn_id = 3;
+}
+
+// Mutating. Answers a pending interaction. First writer wins: the first accepted answer settles the
+// interaction; later answers are reported as `INTERACTION_RESPONSE_DISPOSITION_SUPERSEDED`.
+message RespondInteraction {
+  MutationKey key = 1;
+  string session_id = 2;
+  string interaction_id = 3;
+  // Must equal `PendingInteraction.interaction_generation`; a mismatch is
+  // `INTERACTION_RESPONSE_DISPOSITION_STALE_GENERATION`.
+  bytes interaction_generation = 4;
+  InteractionAnswer answer = 5;
+}
+
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  STOP_REASON_USER_REQUESTED = 1;
+  STOP_REASON_WORKSPACE_CLOSING = 2;
+  STOP_REASON_EXECUTION_LOCATION_CHANGE = 3;
+  STOP_REASON_HOST_POLICY = 4;
+}
+
+// Mutating. Terminates the session's provider runtime (mirrors the `cancelSessionRuntime` intent).
+// The event log is kept; the session becomes terminal (`SESSION_STATUS_CANCELLED`).
+message Stop {
+  MutationKey key = 1;
+  string session_id = 2;
+  StopReason reason = 3;
+}
+
+enum ShutdownMode {
+  SHUTDOWN_MODE_UNSPECIFIED = 0;
+  // Let running turns finish until `deadline_seconds`, then interrupt.
+  SHUTDOWN_MODE_GRACEFUL = 1;
+  // Interrupt every turn immediately, checkpoint, exit.
+  SHUTDOWN_MODE_IMMEDIATE = 2;
+}
+
+// Ask the host to flush every log, write a snapshot per session, and refuse new work so an app
+// update can restart it (design §5.4 `prepare_update`).
+message PrepareUpdate {
+  uint32 deadline_seconds = 1;
+}
+
+message Shutdown {
+  ShutdownMode mode = 1;
+  uint32 deadline_seconds = 2;
+}
+
+// Mutating host-level control. Idempotency for host control is per host process lifetime (there
+// is no host-level log in v1).
+message HostControl {
+  MutationKey key = 1;
+  oneof action {
+    PrepareUpdate prepare_update = 2;
+    Shutdown shutdown = 3;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Command responses
+// ---------------------------------------------------------------------------------------------
+
+message CommandResponse {
+  string request_id = 1;
+  oneof outcome {
+    // Success. For mutating commands this means a `CommandSettled` record exists.
+    CommandResult result = 2;
+    // Same `operation_id` seen before with a different `argument_fingerprint`.
+    OperationConflict operation_conflict = 3;
+    // The host cannot tell whether the operation settled (for example the connection dropped between
+    // `CommandAccepted` and `CommandSettled`). The client must re-attach and read the settlement
+    // from the event log instead of retrying blindly.
+    OperationUncertain uncertain = 4;
+    // The command was not accepted at all; nothing was recorded.
+    CommandRejected rejected = 5;
+  }
+}
+
+message OperationConflict {
+  string operation_id = 1;
+  string recorded_fingerprint = 2;
+  string submitted_fingerprint = 3;
+}
+
+message OperationUncertain {
+  string operation_id = 1;
+  string detail = 2;
+}
+
+enum CommandRejectionReason {
+  COMMAND_REJECTION_REASON_UNSPECIFIED = 0;
+  COMMAND_REJECTION_REASON_INVALID_ARGUMENT = 1;
+  COMMAND_REJECTION_REASON_UNKNOWN_SESSION = 2;
+  COMMAND_REJECTION_REASON_NOT_ATTACHED = 3;
+  COMMAND_REJECTION_REASON_SESSION_NOT_ACTIVE = 4;
+  COMMAND_REJECTION_REASON_SESSION_EXISTS = 5;
+  COMMAND_REJECTION_REASON_UNKNOWN_WORKSPACE = 6;
+  COMMAND_REJECTION_REASON_CAPABILITY_MISSING = 7;
+  COMMAND_REJECTION_REASON_HANDSHAKE_REQUIRED = 8;
+  COMMAND_REJECTION_REASON_HOST_SHUTTING_DOWN = 9;
+  COMMAND_REJECTION_REASON_LIMIT_EXCEEDED = 10;
+  COMMAND_REJECTION_REASON_PROVIDER_UNAVAILABLE = 11;
+}
+
+message CommandRejected {
+  CommandRejectionReason reason = 1;
+  string detail = 2;
+}
+
+message CommandResult {
+  oneof result {
+    SessionList session_list = 1;
+    AttachResult attached = 2;
+    Detached detached = 3;
+    SessionStarted started = 4;
+    Steered steered = 5;
+    InterruptResult interrupted = 6;
+    InteractionResponded interaction_responded = 7;
+    Stopped stopped = 8;
+    HostControlResult host_control = 9;
+  }
+}
+
+message SessionList {
+  repeated SessionSummary sessions = 1;
+}
+
+enum AttachReplay {
+  ATTACH_REPLAY_UNSPECIFIED = 0;
+  // Every event after `resume_cursor` will be delivered; no snapshot stream follows.
+  ATTACH_REPLAY_COMPLETE = 1;
+  // Part of the requested tail was compacted away; a snapshot through `snapshot_through_cursor`
+  // follows, then events after it.
+  ATTACH_REPLAY_PARTIAL = 2;
+  // The generation changed or the cursor is unknown; a full snapshot follows, then the tail.
+  ATTACH_REPLAY_UNAVAILABLE = 3;
+}
+
+// Returned atomically with the cursor the live stream starts at (design §5.5).
+message AttachResult {
+  string session_id = 1;
+  // Current generation; every following `EventNotification` for this session carries it.
+  bytes generation = 2;
+  AttachReplay replay = 3;
+  // True when a `SnapshotBegin`..`SnapshotEnd` stream follows this response.
+  bool snapshot_follows = 4;
+  // Cursor the snapshot covers (0 when no snapshot follows).
+  uint64 snapshot_through_cursor = 5;
+  // First `delivery_cursor` that will be pushed after this response (and after the snapshot).
+  uint64 next_cursor = 6;
+  SessionSummary summary = 7;
+}
+
+message Detached {
+  string session_id = 1;
+}
+
+message SessionStarted {
+  string session_id = 1;
+  bytes generation = 2;
+  uint64 next_cursor = 3;
+  SessionSummary summary = 4;
+}
+
+message Steered {
+  string session_id = 1;
+  string message_id = 2;
+  // Log cursor of the record that captured the message.
+  uint64 recorded_cursor = 3;
+}
+
+// Mirrors the five-outcome interrupt contract shared with the Claude runtime surface.
+enum InterruptOutcome {
+  INTERRUPT_OUTCOME_UNSPECIFIED = 0;
+  INTERRUPT_OUTCOME_ACKNOWLEDGED = 1;
+  INTERRUPT_OUTCOME_NO_TURN_IN_FLIGHT = 2;
+  INTERRUPT_OUTCOME_STALE_GENERATION = 3;
+  INTERRUPT_OUTCOME_TIMED_OUT = 4;
+  INTERRUPT_OUTCOME_FAILED = 5;
+}
+
+message InterruptResult {
+  string session_id = 1;
+  InterruptOutcome outcome = 2;
+  string detail = 3;
+}
+
+enum InteractionResponseDisposition {
+  INTERACTION_RESPONSE_DISPOSITION_UNSPECIFIED = 0;
+  // This answer settled the interaction.
+  INTERACTION_RESPONSE_DISPOSITION_ACCEPTED = 1;
+  // Another writer settled it first (first-writer-wins).
+  INTERACTION_RESPONSE_DISPOSITION_SUPERSEDED = 2;
+  INTERACTION_RESPONSE_DISPOSITION_STALE_GENERATION = 3;
+  INTERACTION_RESPONSE_DISPOSITION_UNKNOWN_INTERACTION = 4;
+  // The interaction timed out or was cancelled by the provider before the answer arrived.
+  INTERACTION_RESPONSE_DISPOSITION_EXPIRED = 5;
+}
+
+message InteractionResponded {
+  string session_id = 1;
+  string interaction_id = 2;
+  InteractionResponseDisposition disposition = 3;
+}
+
+message Stopped {
+  string session_id = 1;
+  SessionStatus status = 2;
+}
+
+message SessionCheckpoint {
+  string session_id = 1;
+  bool succeeded = 2;
+  // Cursor the written snapshot covers.
+  uint64 through_cursor = 3;
+  string detail = 4;
+}
+
+message PrepareUpdateResult {
+  bool all_checkpointed = 1;
+  repeated SessionCheckpoint checkpoints = 2;
+}
+
+message ShutdownAccepted {
+  // RFC 3339 time by which the host will have exited.
+  string deadline_at = 1;
+}
+
+message HostControlResult {
+  oneof result {
+    PrepareUpdateResult prepare_update = 1;
+    ShutdownAccepted shutdown = 2;
+  }
+}
+
+// ============================================================================================
+// Sessions
+// ============================================================================================
+
+// Mirrors the session status vocabulary of the Agent Mode domain snapshot.
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_RUNNING = 1;
+  SESSION_STATUS_WAITING_FOR_INPUT = 2;
+  SESSION_STATUS_COMPLETED = 3;
+  SESSION_STATUS_FAILED = 4;
+  SESSION_STATUS_CANCELLED = 5;
+  SESSION_STATUS_EXPIRED = 6;
+}
+
+// Mirrors the domain `FailureReason` vocabulary.
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+  FAILURE_REASON_PROCESS_CRASH = 1;
+  FAILURE_REASON_TIMEOUT = 2;
+  FAILURE_REASON_AGENT_ERROR = 3;
+  FAILURE_REASON_CANCELLED = 4;
+}
+
+// Provider-neutral approval routing. Mirrors the Codex approval-policy vocabulary
+// (on request / unless trusted / never) plus the ACP "decline when unattended" fallback.
+enum ApprovalPolicy {
+  APPROVAL_POLICY_UNSPECIFIED = 0;
+  // Ask an attached presenting client for every request.
+  APPROVAL_POLICY_ON_REQUEST = 1;
+  // Ask only for requests the provider does not classify as trusted.
+  APPROVAL_POLICY_UNLESS_TRUSTED = 2;
+  // Never ask; approve automatically.
+  APPROVAL_POLICY_NEVER = 3;
+  // Decline automatically when no attached client can present.
+  APPROVAL_POLICY_DECLINE_UNATTENDED = 4;
+}
+
+enum ToolDisposition {
+  TOOL_DISPOSITION_UNSPECIFIED = 0;
+  TOOL_DISPOSITION_ALLOW = 1;
+  TOOL_DISPOSITION_DENY = 2;
+  TOOL_DISPOSITION_ASK = 3;
+}
+
+message ToolPreference {
+  string tool_id = 1;
+  ToolDisposition disposition = 2;
+}
+
+// Opaque provider-specific setting validated by the host's provider adapter (for example a Claude
+// permission mode). Kept as key/value so the wire contract does not change per provider.
+message ProviderSetting {
+  string key = 1;
+  string value = 2;
+}
+
+message PermissionPolicy {
+  ApprovalPolicy approval_policy = 1;
+  repeated ToolPreference tool_preferences = 2;
+  repeated ProviderSetting provider_settings = 3;
+  // 0 means the host default.
+  uint32 interaction_timeout_seconds = 4;
+}
+
+// Reference to a large object stored outside the frame (design §5.2 large-object rule).
+message ArtifactRef {
+  string artifact_id = 1;
+  uint64 byte_length = 2;
+  // Lowercase hex SHA-256 of the artifact bytes.
+  string digest_sha256 = 3;
+  string media_type = 4;
+  string display_name = 5;
+}
+
+message UserMessage {
+  // Caller-generated UUID; used for `Steered.message_id` and transcript correlation.
+  string message_id = 1;
+  string text = 2;
+  repeated ArtifactRef attachments = 3;
+  // RFC 3339.
+  string created_at = 4;
+}
+
+// Everything the host needs to start a session. Paths, provider commands, environment and
+// credentials are resolved by the host from the opaque identifiers below.
+message SessionSpec {
+  // Caller-generated UUID.
+  string session_id = 1;
+  string workspace_id = 2;
+  // Optional execution-location binding; the host resolves it to a canonical worktree.
+  string worktree_id = 3;
+  string session_name = 4;
+  // Provider identifier owned by the host's provider registry (for example `claude`, `codex`, or
+  // an ACP provider id).
+  string provider_id = 5;
+  string agent_id = 6;
+  string agent_display_name = 7;
+  string model_id = 8;
+  // Reasoning effort vocabulary of the provider (for Claude-compatible runtimes:
+  // `max|xhigh|high|medium|low`).
+  string reasoning_effort = 9;
+  // Set to fork from an existing session (`ForkedFrom` record); requires `CAPABILITY_FORK`.
+  string parent_session_id = 10;
+  // Cursor in the parent to fork at; 0 means the parent's current end.
+  uint64 parent_fork_cursor = 11;
+  UserMessage initial_message = 12;
+  PermissionPolicy permission_policy = 13;
+  // Debug builds only (design §11 row 4): opaque handle to a host-side credential envelope. Never
+  // plaintext; release hosts reject a non-empty value.
+  string credential_envelope_id = 14;
+  // Opaque provider session identifier to resume instead of starting fresh.
+  string resume_provider_session_id = 15;
+}
+
+// Session metadata returned by `list_sessions`, `attach`, and `start`, and recorded on every
+// `SessionMetadataChanged` event. Mirrors the domain snapshot's provider-neutral fields; worktree
+// binding is referenced by id only.
+message SessionSummary {
+  string session_id = 1;
+  string workspace_id = 2;
+  string worktree_id = 3;
+  string session_name = 4;
+  string provider_id = 5;
+  string agent_id = 6;
+  string agent_display_name = 7;
+  string model_id = 8;
+  string reasoning_effort = 9;
+  SessionStatus status = 10;
+  string status_text = 11;
+  string latest_assistant_preview = 12;
+  // Present while an interaction is pending.
+  PendingInteraction interaction = 13;
+  uint64 transcript_item_count = 14;
+  // RFC 3339.
+  string created_at = 15;
+  // RFC 3339.
+  string updated_at = 16;
+  string parent_session_id = 17;
+  FailureReason failure_reason = 18;
+  // Opaque provider session identifier (resume handle).
+  string provider_session_id = 19;
+  // Identifier of the run currently owning the session, empty when idle or terminal.
+  string active_run_id = 20;
+  uint32 attached_client_count = 21;
+  // Current log generation and end cursor, so listings can be compared without attaching.
+  bytes generation = 22;
+  uint64 last_cursor = 23;
+}
+
+// ============================================================================================
+// Events (design §5.5)
+// ============================================================================================
+
+// Live or replayed event for an attached session. `delivery_cursor` is the log record ordinal
+// (1-based, contiguous per generation); clients persist `(generation, delivery_cursor)` to resume.
+message EventNotification {
+  string session_id = 1;
+  bytes generation = 2;
+  uint64 delivery_cursor = 3;
+  AgentSessionEvent event = 4;
+}
+
+// Snapshot stream header. The concatenated `SnapshotChunk.data` bytes form one encoded
+// `AgentSessionSnapshot` whose length and digest are given here.
+message SnapshotBegin {
+  string session_id = 1;
+  bytes generation = 2;
+  uint64 through_cursor = 3;
+  uint64 byte_length = 4;
+  // Lowercase hex SHA-256 of the assembled snapshot bytes.
+  string digest_sha256 = 5;
+  uint32 chunk_count = 6;
+}
+
+message SnapshotChunk {
+  string session_id = 1;
+  uint32 chunk_index = 2;
+  uint64 offset = 3;
+  // At most 512 KiB.
+  bytes data = 4;
+}
+
+message SnapshotEnd {
+  string session_id = 1;
+  uint64 through_cursor = 2;
+  // `EventNotification.delivery_cursor` resumes here.
+  uint64 next_cursor = 3;
+}
+
+enum ResnapshotReason {
+  RESNAPSHOT_REASON_UNSPECIFIED = 0;
+  // The client fell behind the per-client queue and events were dropped.
+  RESNAPSHOT_REASON_BACKPRESSURE_OVERFLOW = 1;
+  // The session's generation changed (fork, import, or recovery).
+  RESNAPSHOT_REASON_GENERATION_CHANGED = 2;
+  // The requested tail was compacted away.
+  RESNAPSHOT_REASON_LOG_COMPACTED = 3;
+  // The host restarted; in-memory subscriptions were lost.
+  RESNAPSHOT_REASON_HOST_RESTARTED = 4;
+}
+
+message ResnapshotRequired {
+  string session_id = 1;
+  bytes generation = 2;
+  ResnapshotReason reason = 3;
+  // Last cursor the host believes this client received.
+  uint64 last_delivered_cursor = 4;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Provider-neutral runtime events (mirror the native runtime event family)
+// ---------------------------------------------------------------------------------------------
+
+// One provider-neutral streaming chunk. Mirrors the provider stream result DTO; fields are
+// `optional` so "absent" survives the round trip.
+message StreamResult {
+  // Provider stream item type (`content`, `reasoning`, `tool_call`, `tool_result`,
+  // `final_content`, `usage`, ...); mirrors the stream result's `type`. Kept as a string because
+  // providers extend it.
+  string item_type = 1;
+  optional string text = 2;
+  optional string reasoning = 3;
+  optional uint64 prompt_tokens = 4;
+  optional uint64 completion_tokens = 5;
+  optional double cost = 6;
+  optional string tool_name = 7;
+  optional string tool_args = 8;
+  optional string tool_output = 9;
+  optional string tool_invocation_id = 10;
+  optional string tool_result_json = 11;
+  optional string tool_args_json = 12;
+  optional bool tool_is_error = 13;
+  optional string provider_session_id = 14;
+  optional string stop_reason = 15;
+  optional uint64 model_context_window = 16;
+  optional uint64 context_used_tokens = 17;
+  optional string content_message_id = 18;
+}
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+message RuntimeInitializeResponse {
+  repeated string commands = 1;
+  repeated string agents = 2;
+  string output_style = 3;
+  repeated string available_output_styles = 4;
+  string account = 5;
+  uint32 pid = 6;
+  string models_json = 7;
+  string fast_mode_state_json = 8;
+}
+
+message RuntimeInitStatus {
+  // Opaque provider session identifier.
+  string provider_session_id = 1;
+  repeated string tools = 2;
+  repeated KeyValue mcp_server_statuses = 3;
+  RuntimeInitializeResponse initialize_response = 4;
+}
+
+enum ApprovalRequestIdSource {
+  APPROVAL_REQUEST_ID_SOURCE_UNSPECIFIED = 0;
+  APPROVAL_REQUEST_ID_SOURCE_CODEX = 1;
+  APPROVAL_REQUEST_ID_SOURCE_CLAUDE_CONTROL = 2;
+  APPROVAL_REQUEST_ID_SOURCE_ACP = 3;
+}
+
+enum ApprovalKind {
+  APPROVAL_KIND_UNSPECIFIED = 0;
+  APPROVAL_KIND_COMMAND_EXECUTION = 1;
+  APPROVAL_KIND_FILE_CHANGE = 2;
+}
+
+// Mirrors the provider approval request DTO. `cwd` and `grant_root` are descriptive text shown to
+// the human deciding; receivers never resolve them.
+message ApprovalRequest {
+  string approval_id = 1;
+  string request_id = 2;
+  ApprovalRequestIdSource request_id_source = 3;
+  string method = 4;
+  ApprovalKind kind = 5;
+  string thread_id = 6;
+  string turn_id = 7;
+  string item_id = 8;
+  string reason = 9;
+  repeated string command = 10;
+  string cwd = 11;
+  string grant_root = 12;
+  string proposed_execpolicy_amendment_json = 13;
+  repeated string details = 14;
+}
+
+message ApprovalCancelled {
+  string approval_id = 1;
+  string reason = 2;
+}
+
+message TurnCompleted {
+  string turn_id = 1;
+  string stop_reason = 2;
+}
+
+message RuntimeError {
+  string code = 1;
+  string message = 2;
+  bool recoverable = 3;
+}
+
+// Mirrors the native runtime event family (stream / runtimeInit / approvalRequest /
+// approvalCancelled / turnCompleted / error).
+message RuntimeEvent {
+  string run_id = 1;
+  string turn_id = 2;
+  oneof kind {
+    StreamResult stream = 10;
+    RuntimeInitStatus runtime_init = 11;
+    ApprovalRequest approval_request = 12;
+    ApprovalCancelled approval_cancelled = 13;
+    TurnCompleted turn_completed = 14;
+    RuntimeError error = 15;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Run lifecycle (mirror the domain lifecycle contracts and typed termination)
+// ---------------------------------------------------------------------------------------------
+
+enum LifecycleStage {
+  LIFECYCLE_STAGE_UNSPECIFIED = 0;
+  LIFECYCLE_STAGE_STARTING = 1;
+  LIFECYCLE_STAGE_PREPARING_RUNTIME = 2;
+  LIFECYCLE_STAGE_RUNNING = 3;
+  LIFECYCLE_STAGE_WAITING_FOR_INTERACTION = 4;
+  LIFECYCLE_STAGE_RETRYING = 5;
+  LIFECYCLE_STAGE_CANCELLING = 6;
+}
+
+enum RetryIntent {
+  RETRY_INTENT_UNSPECIFIED = 0;
+  RETRY_INTENT_NONE = 1;
+  RETRY_INTENT_PROVIDER_MANAGED = 2;
+  RETRY_INTENT_APPLICATION_MANAGED = 3;
+}
+
+enum EpochTransitionKind {
+  EPOCH_TRANSITION_KIND_UNSPECIFIED = 0;
+  EPOCH_TRANSITION_KIND_INITIAL = 1;
+  EPOCH_TRANSITION_KIND_RELATED_FOLLOW_UP = 2;
+  EPOCH_TRANSITION_KIND_STEERING = 3;
+  EPOCH_TRANSITION_KIND_UNRELATED = 4;
+}
+
+message TurnEpoch {
+  string turn_id = 1;
+  uint64 epoch = 2;
+  EpochTransitionKind transition = 3;
+}
+
+// Mirrors the domain terminal outcome kind.
+enum TerminalOutcomeKind {
+  TERMINAL_OUTCOME_KIND_UNSPECIFIED = 0;
+  TERMINAL_OUTCOME_KIND_COMPLETED = 1;
+  TERMINAL_OUTCOME_KIND_CANCELLED = 2;
+  TERMINAL_OUTCOME_KIND_FAILED = 3;
+}
+
+message TerminalOutcome {
+  TerminalOutcomeKind kind = 1;
+  optional string assistant_text = 2;
+  FailureReason failure_reason = 3;
+}
+
+// Mirrors the provider termination signal vocabulary.
+enum TerminationSignalKind {
+  TERMINATION_SIGNAL_KIND_UNSPECIFIED = 0;
+  TERMINATION_SIGNAL_KIND_COMPLETED = 1;
+  TERMINATION_SIGNAL_KIND_CANCELLED = 2;
+  TERMINATION_SIGNAL_KIND_SUPERSEDED = 3;
+  TERMINATION_SIGNAL_KIND_STARTUP_FAILURE = 4;
+  TERMINATION_SIGNAL_KIND_PROVIDER_FAILURE = 5;
+  TERMINATION_SIGNAL_KIND_TIMEOUT = 6;
+  TERMINATION_SIGNAL_KIND_PROCESS_EXITED = 7;
+  TERMINATION_SIGNAL_KIND_TRANSPORT_CLOSED = 8;
+  TERMINATION_SIGNAL_KIND_UNEXPECTED_END = 9;
+}
+
+message TerminationSignal {
+  TerminationSignalKind kind = 1;
+  optional string assistant_text = 2;
+  FailureReason failure_reason = 3;
+}
+
+message RunStarted {
+  string attempt_id = 1;
+  UserMessage message = 2;
+}
+
+message RunStageChanged {
+  LifecycleStage stage = 1;
+  RetryIntent retry_intent = 2;
+}
+
+message RunTerminated {
+  TerminalOutcome outcome = 1;
+  TerminationSignal signal = 2;
+}
+
+message RunLifecycleEvent {
+  string run_id = 1;
+  TurnEpoch epoch = 2;
+  oneof kind {
+    RunStarted started = 10;
+    RunStageChanged stage_changed = 11;
+    RunTerminated terminated = 12;
+  }
+}
+
+// ============================================================================================
+// Interactions (design §5.6)
+// ============================================================================================
+
+// Mirrors the domain interaction kind vocabulary.
+enum InteractionKind {
+  INTERACTION_KIND_UNSPECIFIED = 0;
+  INTERACTION_KIND_INSTRUCTION = 1;
+  INTERACTION_KIND_QUESTION = 2;
+  INTERACTION_KIND_USER_INPUT = 3;
+  INTERACTION_KIND_APPROVAL = 4;
+  INTERACTION_KIND_HOOK_APPROVAL = 5;
+  INTERACTION_KIND_MCP_ELICITATION = 6;
+}
+
+// Mirrors the domain interaction response-type vocabulary.
+enum InteractionResponseType {
+  INTERACTION_RESPONSE_TYPE_UNSPECIFIED = 0;
+  INTERACTION_RESPONSE_TYPE_TEXT = 1;
+  INTERACTION_RESPONSE_TYPE_CHOICE = 2;
+  INTERACTION_RESPONSE_TYPE_STRUCTURED = 3;
+  INTERACTION_RESPONSE_TYPE_DECISION = 4;
+  INTERACTION_RESPONSE_TYPE_ELICITATION = 5;
+}
+
+message InteractionOption {
+  string option_id = 1;
+  string label = 2;
+  string description = 3;
+  bool preferred = 4;
+}
+
+message InteractionField {
+  string field_id = 1;
+  string label = 2;
+  string placeholder = 3;
+  bool required = 4;
+  bool secret = 5;
+  repeated InteractionOption options = 6;
+  bool allows_multiple = 7;
+}
+
+// Interaction awaiting an answer. `interaction_generation` is the host-internal generation that a
+// `RespondInteraction` must echo; it changes when the same interaction is re-issued.
+message PendingInteraction {
+  string interaction_id = 1;
+  bytes interaction_generation = 2;
+  InteractionKind kind = 3;
+  InteractionResponseType response_type = 4;
+  string title = 5;
+  string prompt = 6;
+  string context = 7;
+  bool allows_multiple = 8;
+  repeated InteractionOption options = 9;
+  repeated InteractionField fields = 10;
+  repeated string details = 11;
+  // Populated for approval interactions.
+  ApprovalRequest approval = 12;
+  // RFC 3339.
+  string requested_at = 13;
+  // 0 means no timeout.
+  uint32 timeout_seconds = 14;
+  // Run and turn that raised it.
+  string run_id = 15;
+  string turn_id = 16;
+}
+
+// Mirrors the approval decision vocabulary.
+enum ApprovalDecisionKind {
+  APPROVAL_DECISION_KIND_UNSPECIFIED = 0;
+  APPROVAL_DECISION_KIND_ACCEPT = 1;
+  APPROVAL_DECISION_KIND_ACCEPT_FOR_SESSION = 2;
+  APPROVAL_DECISION_KIND_ACCEPT_WITH_EXECPOLICY_AMENDMENT = 3;
+  APPROVAL_DECISION_KIND_DECLINE = 4;
+  APPROVAL_DECISION_KIND_CANCEL = 5;
+}
+
+message ApprovalDecision {
+  ApprovalDecisionKind kind = 1;
+  // Set for `ACCEPT_WITH_EXECPOLICY_AMENDMENT`.
+  string execpolicy_amendment_json = 2;
+}
+
+message FieldAnswer {
+  string field_id = 1;
+  repeated string values = 2;
+  bool skipped = 3;
+}
+
+message TextAnswer {
+  string text = 1;
+}
+
+message ChoiceAnswer {
+  repeated string selected_option_ids = 1;
+  string custom_response = 2;
+}
+
+message StructuredAnswer {
+  repeated FieldAnswer answers = 1;
+}
+
+enum ElicitationAction {
+  ELICITATION_ACTION_UNSPECIFIED = 0;
+  ELICITATION_ACTION_ACCEPT = 1;
+  ELICITATION_ACTION_DECLINE = 2;
+  ELICITATION_ACTION_CANCEL = 3;
+}
+
+message ElicitationAnswer {
+  ElicitationAction action = 1;
+  string content_json = 2;
+  string meta_json = 3;
+}
+
+message InteractionAnswer {
+  oneof answer {
+    ApprovalDecision approval = 1;
+    TextAnswer text = 2;
+    ChoiceAnswer choice = 3;
+    StructuredAnswer structured = 4;
+    ElicitationAnswer elicitation = 5;
+  }
+  // True when the client declined to answer (the prompt was dismissed or timed out client-side).
+  bool skipped = 10;
+}
+
+enum InteractionSettlement {
+  INTERACTION_SETTLEMENT_UNSPECIFIED = 0;
+  INTERACTION_SETTLEMENT_ANSWERED = 1;
+  INTERACTION_SETTLEMENT_TIMED_OUT = 2;
+  INTERACTION_SETTLEMENT_CANCELLED_BY_PROVIDER = 3;
+  INTERACTION_SETTLEMENT_AUTO_RESOLVED_BY_POLICY = 4;
+  INTERACTION_SETTLEMENT_SESSION_TERMINATED = 5;
+}
+
+message InteractionRequested {
+  PendingInteraction interaction = 1;
+}
+
+message InteractionSettled {
+  string interaction_id = 1;
+  bytes interaction_generation = 2;
+  InteractionSettlement settlement = 3;
+  // The winning answer when `ANSWERED` or `AUTO_RESOLVED_BY_POLICY`.
+  InteractionAnswer answer = 4;
+  // `operation_id` of the winning `RespondInteraction`, empty otherwise.
+  string operation_id = 5;
+}
+
+message InteractionEvent {
+  oneof kind {
+    InteractionRequested requested = 1;
+    InteractionSettled settled = 2;
+  }
+}
+
+// ============================================================================================
+// Event-log records (design §7.2)
+// ============================================================================================
+
+// Recorded before a mutating command executes.
+message CommandAccepted {
+  string operation_id = 1;
+  string argument_fingerprint = 2;
+  // Which command it was, for replay tooling.
+  string command_kind = 3;
+  // RFC 3339.
+  string accepted_at = 4;
+}
+
+// Recorded once a mutating command has a durable outcome. A retry with the same `MutationKey`
+// returns `settlement` without re-executing.
+message CommandSettled {
+  string operation_id = 1;
+  oneof settlement {
+    CommandResult result = 2;
+    CommandRejected rejected = 3;
+  }
+  // RFC 3339.
+  string settled_at = 4;
+}
+
+// First record of a log created by importing a legacy Swift-owned session (design §7.2 import).
+message Imported {
+  // Lowercase hex SHA-256 of the legacy persisted session bytes.
+  string legacy_digest = 1;
+  string legacy_format = 2;
+  uint64 imported_item_count = 3;
+  // RFC 3339.
+  string imported_at = 4;
+}
+
+// First record of a log created by forking another session at `cursor` (design §7.2 fork).
+message ForkedFrom {
+  string session_id = 1;
+  uint64 cursor = 2;
+  bytes generation = 3;
+}
+
+message SessionMetadataChanged {
+  SessionSummary summary = 1;
+}
+
+// One event-log record. On disk each record is `u32 big-endian length || u32 big-endian CRC32C ||
+// encoded AgentSessionEvent`; the record ordinal (1-based) is the `delivery_cursor`. On the wire
+// the same message travels inside `EventNotification`, so every record is also an event.
+message AgentSessionEvent {
+  // RFC 3339 time the host recorded it.
+  string recorded_at = 1;
+  oneof body {
+    RuntimeEvent runtime_event = 10;
+    RunLifecycleEvent run_lifecycle = 11;
+    InteractionEvent interaction = 12;
+    SessionMetadataChanged session_metadata_changed = 13;
+    // A user message accepted by `Steer` or `Start`.
+    UserMessage user_message = 14;
+    CommandAccepted command_accepted = 20;
+    CommandSettled command_settled = 21;
+    Imported imported = 22;
+    ForkedFrom forked_from = 23;
+  }
+}
+
+// ============================================================================================
+// Snapshot (design §7.2; derived cache -- the log is canonical)
+// ============================================================================================
+
+enum TranscriptRole {
+  TRANSCRIPT_ROLE_UNSPECIFIED = 0;
+  TRANSCRIPT_ROLE_USER = 1;
+  TRANSCRIPT_ROLE_ASSISTANT = 2;
+  TRANSCRIPT_ROLE_TOOL = 3;
+  TRANSCRIPT_ROLE_SYSTEM = 4;
+}
+
+// Provider-neutral transcript entry folded from `StreamResult`s and user messages.
+message TranscriptEntry {
+  string entry_id = 1;
+  TranscriptRole role = 2;
+  string text = 3;
+  string reasoning = 4;
+  string tool_name = 5;
+  string tool_invocation_id = 6;
+  string tool_args_json = 7;
+  string tool_result_json = 8;
+  bool tool_is_error = 9;
+  repeated ArtifactRef attachments = 10;
+  // RFC 3339.
+  string created_at = 11;
+  string turn_id = 12;
+  // Cursor of the last log record folded into this entry.
+  uint64 through_cursor = 13;
+}
+
+// State reduced from the log through `through_cursor`. Never authoritative: a missing or corrupt
+// snapshot is rebuilt by replaying the log.
+message AgentSessionSnapshot {
+  string session_id = 1;
+  bytes generation = 2;
+  uint64 through_cursor = 3;
+  SessionSummary summary = 4;
+  repeated TranscriptEntry transcript = 5;
+  // Interactions still pending at `through_cursor`.
+  repeated PendingInteraction pending_interactions = 6;
+  // Mutating operations accepted but not yet settled at `through_cursor`.
+  repeated CommandAccepted unsettled_operations = 7;
+  // RFC 3339.
+  string written_at = 8;
+}

@@ -1022,6 +1022,8 @@ actor InteractiveREPL {
                                           Send follow-up instruction
           \u{001B}[32magent_run\u{001B}[0m op=respond session_id="..." interaction_id="..." response="..."
                                           Respond to pending interaction
+          \u{001B}[32magent_run\u{001B}[0m op=attach session_id="..."  Join a host session (second client)
+          \u{001B}[32magent_run\u{001B}[0m op=detach session_id="..."  Unsubscribe this handle (run continues)
           \u{001B}[32magent_run\u{001B}[0m op=cancel session_id="..." Cancel run
           session_id and session_ids are mutually exclusive; session_ids is wait/poll only.
           Multi-wait returns wait metadata; multi-poll returns poll metadata + snapshots.

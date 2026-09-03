@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 agentry-proto.workspace = true
+agentry-agent-session-log.workspace = true
 agentry-runtime.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true

@@ -2,6 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod agent_host_types;
+mod agent_provider_semantics;
+mod agent_run_lifecycle;
+mod agent_run_lifecycle_types;
+mod agent_session_host;
+mod agent_session_transcript;
 mod api;
 mod errors;
 mod panic_guard;
@@ -14,6 +20,12 @@ mod generated {
     pub(crate) mod contract_identity;
 }
 
+pub use agent_host_types::*;
+pub use agent_provider_semantics::*;
+pub use agent_run_lifecycle::*;
+pub use agent_run_lifecycle_types::*;
+pub use agent_session_host::*;
+pub use agent_session_transcript::*;
 pub use api::{CoreRuntime, LeafCancellation};
 pub use errors::CoreError;
 pub use types::*;

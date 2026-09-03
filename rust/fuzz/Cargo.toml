@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 agentry-proto = { path = "../crates/proto", version = "=0.1.0" }
+agentry-agent-session-log = { path = "../crates/agent_session_log", version = "=0.1.0" }
 agentry-runtime = { path = "../crates/runtime", version = "=0.1.0" }
 libfuzzer-sys = "=0.4.13"
 
@@ -71,6 +72,20 @@ bench = false
 [[bin]]
 name = "agent_command_v1"
 path = "fuzz_targets/agent_command_v1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_host_frame_v1"
+path = "fuzz_targets/agent_host_frame_v1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_session_log_frame_v1"
+path = "fuzz_targets/agent_session_log_frame_v1.rs"
 test = false
 doc = false
 bench = false

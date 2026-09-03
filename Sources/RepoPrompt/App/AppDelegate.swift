@@ -255,10 +255,9 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
                 await WindowStatesManager.shared.persistWindowSessionImmediately(reason: "appShouldTerminate")
             }
 
-            // 3) Shut down agent processes and MCP tools on the main actor WITHOUT blocking.
-            // Kill Claude CLI and Codex app-server processes BEFORE stopping MCP servers,
-            // so child processes are terminated and reaped rather than orphaned on quit.
-            await WindowStatesManager.shared.shutdownAllAgentSessions()
+            // 3) Detach host-owned Agent Mode sessions. Do not stop providers — the host
+            // keeps running (ADR-0011 P3). "Stop all agents" remains an explicit user action.
+            await WindowStatesManager.shared.detachAllHostAgentSessions()
             await WindowStatesManager.shared.stopAllServers()
             await shutdownDomainRuntimeForTermination()
             await shutdownAgentryCoreForTermination()

@@ -32,9 +32,11 @@ The production chain is `ClaudeAgentModeCoordinator.makeDefaultController` → `
 
 No export accepts a single protocol line. The temporary DEBUG-only `agent_claude_decode_line_debug_v1` shadow export used during P6-5 validation was deleted at P6-10 together with its Swift bridge and shadow comparator; the production co-location invariant is now structural rather than flag-gated.
 
-### 1.2 Topology: GUI-scope-only, verified by construction
+### 1.2 Topology: host-owned production, in-process tests-only
 
-The interactive Claude native runtime is a GUI-scope capability with exactly one implementation and one topology, enforced structurally rather than assumed: `ClaudeRustBackedNativeSessionAdapter` is constructed only inside `ClaudeAgentModeCoordinator.makeDefaultController`; `ClaudeAgentModeCoordinator` is constructed only inside the `@MainActor` `AgentModeViewModel`; and `Sources/RepoPromptMCP` constructs neither interactive symbol. `Scripts/source_layout_guardrails.sh` §11 enforces that reachability chain and also rejects reintroduction of the deleted Swift controller/codec/shadow files and temporary DEBUG selection/shadow bridge.
+Production Agent Mode execution is owned by the Agent Session Host (`agentry-mcp agent-host`). The GUI talks to it through `HostAgentSessionConnection` (ADR-0011 P3). `InProcessAgentSessionConnection` and the GUI-scoped `ClaudeRustBackedNativeSessionAdapter` path remain for tests and for the in-process coordinator stack that the host has not yet absorbed.
+
+`ClaudeRustBackedNativeSessionAdapter` is still constructed only inside `ClaudeAgentModeCoordinator.makeDefaultController`; `Sources/RepoPromptMCP` constructs neither that adapter nor `ClaudeAgentModeCoordinator`. The host's production executor uses `CoreAgentSession` / `CoreAgentProviderSession` (AppKit-free). `Scripts/source_layout_guardrails.sh` §11 continues to reject MCP construction of the interactive GUI symbols.
 
 The headless Claude path (`ClaudeRustBackedHeadlessAgentProvider`, one-shot `-p`, `HeadlessAgentProvider`) is covered by the separate P6-11 one-shot contract. It shares the Rust transport and translator authority but intentionally keeps its headless prompt/credential preparation seam separate from the interactive session lifecycle.
 
@@ -416,7 +418,7 @@ P6-1 does not migrate or own, and no later Claude-vertical step migrates without
 - `AgentSession`/`AgentSessionIndex` persistence — format, schema version, and write path stay Swift-owned for the entire Claude vertical (design §6; charter §15.3 gate 4 exempt).
 - The headless one-shot Claude provider is covered by P6-11 and is not part of the interactive session lifecycle described by this document.
 - GLM / Kimi / custom Claude-compatible before the §15.9 amendment; they now share the Rust authority.
-- Codex, ACP, or any other provider family.
+- Codex, ACP, or any other provider family. ADR-0011 P6-c landed a Rust semantic module (`agentry_runtime::agent_provider_semantics`) plus UniFFI objects for Codex/ACP notification interpretation and MCP permission-policy evaluation; production GUI/host paths still use Swift until the later host rewire. This document's Claude topology (§1.2) is unchanged.
 - The MCP-idle steering safe point's host-side facts (§7.2) — Phase 5 territory.
 - The Host Capability Broker's Agent-domain wiring (charter §11.1) — the charter-idiomatic `HostRequest` alternative for the MCP lease/PID-fence ordering is explicitly not taken in this vertical (design §4.6); today's window and race-tolerance are the parity bar, not an improvement.
 

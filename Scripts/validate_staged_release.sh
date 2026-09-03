@@ -111,6 +111,7 @@ for path in [
     root / ".build" / "release" / "Agentry-artifact-manifest.json",
     app / "Contents" / "MacOS" / "Agentry",
     app / "Contents" / "MacOS" / "agentry-mcp",
+    app / "Contents" / "MacOS" / "agentry-agent-host",
 ]:
     require_regular_file(path)
 

@@ -95,6 +95,11 @@ if [[ -n "$RELEASE_BUILD_NUMBER_OVERRIDE" ]]; then
 fi
 APP_NAME="${APP_NAME:-Agentry}"; DISPLAY_NAME="${DISPLAY_NAME:-Agentry}"; BASE_BUNDLE_ID="${BUNDLE_ID:-io.github.z23cc.agentry}"; MARKETING_VERSION="${MARKETING_VERSION:-0.1.0}"; BUILD_NUMBER="${BUILD_NUMBER:-1}"; SIGNING_TEAM_ID="${SIGNING_TEAM_ID:-}"
 MCP_PRODUCT_NAME="agentry-mcp"
+# ADR-0011 P7: Rust `bins/agentry-mcp` is packaged under a distinct name so it
+# cannot be confused with the Swift MCP CLI product (`agentry-mcp`).
+AGENT_HOST_HELPER_NAME="agentry-agent-host"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/.build/cargo}"
+CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET:-aarch64-apple-darwin}"
 AGENTRY_SPARKLE_STABLE_FEED_URL="${AGENTRY_SPARKLE_STABLE_FEED_URL:-__AGENTRY_SPARKLE_STABLE_FEED_URL__}"
 AGENTRY_SPARKLE_BETA_FEED_URL="${AGENTRY_SPARKLE_BETA_FEED_URL:-__AGENTRY_SPARKLE_BETA_FEED_URL__}"
 AGENTRY_SPARKLE_PUBLIC_ED_KEY="${AGENTRY_SPARKLE_PUBLIC_ED_KEY:-__AGENTRY_SPARKLE_PUBLIC_ED_KEY__}"
@@ -267,7 +272,21 @@ else
 fi
 COMPAT_APP_BUNDLE="$ROOT_DIR/.build/$CONF/$APP_NAME.app"
 CLI_PATH="$BUILD_DIR/$MCP_PRODUCT_NAME"
-printf 'BUILD_DIR=%s\nAPP_BUNDLE=%s\nCOMPAT_APP_BUNDLE=%s\nCLI_PATH=%s\nAD_HOC_SIGNING=%s\nARCHITECTURE_POLICY=%s\n' "$BUILD_DIR" "$APP_BUNDLE" "$COMPAT_APP_BUNDLE" "$CLI_PATH" "$USE_ADHOC_SIGNING" "$ARCHITECTURE_POLICY"
+phase "Building Rust $AGENT_HOST_HELPER_NAME ($CONF, $CARGO_BUILD_TARGET)"
+CARGO_PROFILE_ARGS=()
+if [[ "$CONF" == "release" ]]; then
+    CARGO_PROFILE_ARGS+=(--release)
+fi
+run env CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+    "$RUN_WITHOUT_GITHUB_TOKENS" cargo build \
+    --manifest-path "$ROOT_DIR/rust/Cargo.toml" \
+    --locked \
+    --target "$CARGO_BUILD_TARGET" \
+    -p agentry-mcp \
+    "${CARGO_PROFILE_ARGS[@]}"
+RUST_HOST_BIN="$CARGO_TARGET_DIR/$CARGO_BUILD_TARGET/$CONF/agentry-mcp"
+[[ -x "$RUST_HOST_BIN" ]] || fail "Missing Rust agent-host binary: $RUST_HOST_BIN"
+printf 'BUILD_DIR=%s\nAPP_BUNDLE=%s\nCOMPAT_APP_BUNDLE=%s\nCLI_PATH=%s\nRUST_HOST_BIN=%s\nAD_HOC_SIGNING=%s\nARCHITECTURE_POLICY=%s\n' "$BUILD_DIR" "$APP_BUNDLE" "$COMPAT_APP_BUNDLE" "$CLI_PATH" "$RUST_HOST_BIN" "$USE_ADHOC_SIGNING" "$ARCHITECTURE_POLICY"
 
 generate_sentry_debug_symbols(){
     sentry_linking_enabled || return 0
@@ -295,6 +314,8 @@ for exe in "$APP_NAME" "$MCP_PRODUCT_NAME"; do
     run cp "$BUILD_DIR/$exe" "$APP_BUNDLE/Contents/MacOS/$exe"
     run chmod +x "$APP_BUNDLE/Contents/MacOS/$exe"
 done
+run cp "$RUST_HOST_BIN" "$APP_BUNDLE/Contents/MacOS/$AGENT_HOST_HELPER_NAME"
+run chmod +x "$APP_BUNDLE/Contents/MacOS/$AGENT_HOST_HELPER_NAME"
 run ln -sf "../MacOS/$MCP_PRODUCT_NAME" "$APP_BUNDLE/Contents/Resources/$MCP_PRODUCT_NAME"
 run ln -sf "../../MacOS/$MCP_PRODUCT_NAME" "$APP_BUNDLE/Contents/Resources/bin/$MCP_PRODUCT_NAME"
 run mkdir -p "$APP_BUNDLE/Contents/Resources/Legal"
@@ -488,6 +509,7 @@ verify_signed_app_identity(){
     fi
 }
 if [[ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework" ]]; then sign_sparkle_framework "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"; fi
+sign_path "$APP_BUNDLE/Contents/MacOS/$AGENT_HOST_HELPER_NAME"
 sign_path "$APP_BUNDLE/Contents/MacOS/$MCP_PRODUCT_NAME"
 sign_path "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 APP_SIGN_ARGS=()

@@ -116,6 +116,24 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case watcherUnknownScope
     case watcherScopeClosed
     case watcherInvalidRequest(String)
+    // ADR-0011 P2: agent-host-v1 codec (`AgentHostProtocolV1`) and event log (`AgentSessionLog`).
+    // Those objects throw the raw `CoreError` directly rather than through `CoreRuntime`; the
+    // mirror keeps `map` exhaustive and gives the host shell one Swift vocabulary.
+    case agentHostFrameMalformed(String)
+    case agentHostFrameTooLarge(actual: UInt64, maximum: UInt64)
+    case agentSessionLogIo(operation: String, message: String)
+    case agentSessionLogNotFound(path: String)
+    case agentSessionLogInvalidFile(String)
+    case agentSessionLogUnsupportedSchemaVersion(found: UInt16, supported: UInt16)
+    case agentSessionLogSessionMismatch(expected: String, found: String)
+    case agentSessionLogInvalidSessionId(String)
+    case agentSessionLogRecordTooLarge(actual: UInt64, maximum: UInt64)
+    case agentSessionLogCursorOutOfRange(cursor: UInt64, nextCursor: UInt64)
+    case agentSessionLogMalformedRecord(cursor: UInt64, message: String)
+    case agentSessionLogSnapshotRejected(String)
+    case agentSessionLogClosed
+    /// ADR-0011 P6-a: an `AgentRun*V1` reducer object refused malformed identity text.
+    case agentRunLifecycleInvalidRequest(String)
     case unexpected(String)
 }
 
@@ -5582,6 +5600,20 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .WatcherUnknownScope: .watcherUnknownScope
         case .WatcherScopeClosed: .watcherScopeClosed
         case let .WatcherInvalidRequest(message): .watcherInvalidRequest(message)
+        case let .AgentHostFrameMalformed(message): .agentHostFrameMalformed(message)
+        case let .AgentHostFrameTooLarge(actual, maximum): .agentHostFrameTooLarge(actual: actual, maximum: maximum)
+        case let .AgentSessionLogIo(operation, message): .agentSessionLogIo(operation: operation, message: message)
+        case let .AgentSessionLogNotFound(path): .agentSessionLogNotFound(path: path)
+        case let .AgentSessionLogInvalidFile(message): .agentSessionLogInvalidFile(message)
+        case let .AgentSessionLogUnsupportedSchemaVersion(found, supported): .agentSessionLogUnsupportedSchemaVersion(found: found, supported: supported)
+        case let .AgentSessionLogSessionMismatch(expected, found): .agentSessionLogSessionMismatch(expected: expected, found: found)
+        case let .AgentSessionLogInvalidSessionId(value): .agentSessionLogInvalidSessionId(value)
+        case let .AgentSessionLogRecordTooLarge(actual, maximum): .agentSessionLogRecordTooLarge(actual: actual, maximum: maximum)
+        case let .AgentSessionLogCursorOutOfRange(cursor, nextCursor): .agentSessionLogCursorOutOfRange(cursor: cursor, nextCursor: nextCursor)
+        case let .AgentSessionLogMalformedRecord(cursor, message): .agentSessionLogMalformedRecord(cursor: cursor, message: message)
+        case let .AgentSessionLogSnapshotRejected(message): .agentSessionLogSnapshotRejected(message)
+        case .AgentSessionLogClosed: .agentSessionLogClosed
+        case let .AgentRunLifecycleInvalidRequest(message): .agentRunLifecycleInvalidRequest(message)
         }
     }
 
@@ -6361,6 +6393,20 @@ public actor AgentryCoreBridge {
         case .watcherUnknownScope: return .watcherUnknownScope
         case .watcherScopeClosed: return .watcherScopeClosed
         case let .watcherInvalidRequest(message): return .watcherInvalidRequest(message)
+        case let .agentHostFrameMalformed(message): return .agentHostFrameMalformed(message)
+        case let .agentHostFrameTooLarge(actual, maximum): return .agentHostFrameTooLarge(actual: actual, maximum: maximum)
+        case let .agentSessionLogIo(operation, message): return .agentSessionLogIo(operation: operation, message: message)
+        case let .agentSessionLogNotFound(path): return .agentSessionLogNotFound(path: path)
+        case let .agentSessionLogInvalidFile(message): return .agentSessionLogInvalidFile(message)
+        case let .agentSessionLogUnsupportedSchemaVersion(found, supported): return .agentSessionLogUnsupportedSchemaVersion(found: found, supported: supported)
+        case let .agentSessionLogSessionMismatch(expected, found): return .agentSessionLogSessionMismatch(expected: expected, found: found)
+        case let .agentSessionLogInvalidSessionId(value): return .agentSessionLogInvalidSessionId(value)
+        case let .agentSessionLogRecordTooLarge(actual, maximum): return .agentSessionLogRecordTooLarge(actual: actual, maximum: maximum)
+        case let .agentSessionLogCursorOutOfRange(cursor, nextCursor): return .agentSessionLogCursorOutOfRange(cursor: cursor, nextCursor: nextCursor)
+        case let .agentSessionLogMalformedRecord(cursor, message): return .agentSessionLogMalformedRecord(cursor: cursor, message: message)
+        case let .agentSessionLogSnapshotRejected(message): return .agentSessionLogSnapshotRejected(message)
+        case .agentSessionLogClosed: return .agentSessionLogClosed
+        case let .agentRunLifecycleInvalidRequest(message): return .agentRunLifecycleInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }
     }

@@ -1,0 +1,36 @@
+[package]
+name = "agentry-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rust agentry-mcp binary: agent-host mode (ADR-0011 P7 / design §4.1, §8 P7). Not a replacement for the Swift MCP CLI."
+
+[lib]
+name = "agentry_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentry-mcp"
+path = "src/main.rs"
+
+[dependencies]
+agentry-agent-session-log.workspace = true
+agentry-proto.workspace = true
+agentry-runtime.workspace = true
+libc.workspace = true
+nix = { workspace = true, features = ["fs"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+# Same pattern as agentry-runtime: workspace `unsafe_code = "forbid"` cannot be
+# downgraded. Peer pid (`LOCAL_PEERPID`) and `proc_pidpath` live only in `peer.rs`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

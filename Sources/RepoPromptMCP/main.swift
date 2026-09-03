@@ -3117,8 +3117,10 @@ func printUsage() {
                                                         Poll multiple snapshots
           agent_run op=steer session_id="<uuid>" message="Also check logout"
           agent_run op=respond session_id="<uuid>" interaction_id="<id>" response="accept"
+          agent_run op=attach session_id="<uuid>"      Join a host session as a second client
+          agent_run op=detach session_id="<uuid>"      Unsubscribe this handle (run continues)
           agent_run op=cancel session_id="<uuid>"      Cancel run
-          Operations: start, poll, wait, cancel, steer, respond
+          Operations: start, poll, wait, cancel, steer, respond, attach, detach
           wait accepts optional timeout (seconds, fractional OK). Defaults
           to 300s (5 min). timeout=0 returns current snapshot immediately.
           session_ids is accepted only for wait/poll and is mutually exclusive
@@ -3592,7 +3594,15 @@ func launchAgentryApp() {
 // We detect broken pipes via write() errors instead.
 signal(SIGPIPE, SIG_IGN)
 
-/// Parse CLI mode
+// Parse CLI mode
+if CommandLine.arguments.dropFirst().first == "agent-host" {
+    fputs(
+        "agentry-mcp: agent-host is served by the bundled Rust helper (agentry-agent-host), not this CLI\n",
+        stderr
+    )
+    exit(2)
+}
+
 let mode = parseCLIMode()
 
 if case let .policyAdministration(arguments) = mode {
@@ -3636,7 +3646,9 @@ if case .proxy = mode {
 }
 
 let backendDecision: MCPBackendDecision? = if case let .proxy(requestedBackend) = mode {
-    MCPBackendSelection.decide(requested: requestedBackend)
+    MCPBackendSelection.decide(requested: requestedBackend, liveGUIWorkspaceHolder: {
+        AgentSessionHostWorkspaceLease.observeApplicationSupport().hasLiveGUIHolder
+    })
 } else {
     nil
 }

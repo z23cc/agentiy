@@ -7,7 +7,8 @@ final class AgentModeRunService {
         let windowID: Int
         let headlessProviderFactory: AgentModeViewModel.HeadlessProviderFactory
         let acpProviderFactory: AgentModeViewModel.ACPProviderFactory
-        let acpControllerFactory: AgentModeViewModel.ACPControllerFactory
+        /// `nil` selects the production ACP controller (`ACPIntegratedAgentModeRunner.makeProductionController`).
+        var acpControllerFactory: ACPControllerFactory?
         let connectionPolicyInstaller: AgentModeViewModel.ConnectionPolicyInstaller
         let expectedPIDPolicyArmer: (MCPBootstrapLeaseSpec) async -> Bool
         let mcpServerEnabler: AgentModeViewModel.MCPServerEnabler
@@ -33,6 +34,16 @@ final class AgentModeRunService {
     /// composition. See `DomainAgentRunExecutionContracts`.
     typealias CancellationIntent = DomainAgentRunCancellationIntent
     typealias CancellationCompletion = DomainAgentRunCancellationCompletion
+
+    /// Provider-controller construction stays execution-side; the view model only
+    /// forwards an optional override supplied by test harnesses.
+    typealias ACPControllerFactory = ACPIntegratedAgentModeRunner.ControllerFactory
+
+    /// ACP controller without the Rust runtime transport, preserved as the DEBUG
+    /// test-harness default so unit tests keep constructing what they always did.
+    static var directACPControllerFactory: ACPControllerFactory {
+        ACPIntegratedAgentModeRunner.makeDirectController
+    }
 
     /// Strategy for restoring draft text back to the composer.
     enum DraftRestorationStrategy: Equatable {
@@ -98,6 +109,18 @@ final class AgentModeRunService {
             providerFactory: dependencies.acpProviderFactory,
             controllerFactory: dependencies.acpControllerFactory
         )
+    }
+
+    /// Mirrors execution events onto the seam (design §5.5). The observer is held weakly by
+    /// the runners/barrier closures below; installing a new one replaces the previous one.
+    func installExecutionEventObserver(_ observer: any AgentModeExecutionEventObserving) {
+        weak var weakObserver = observer
+        claudeRunner.runtimeEventObserver = { event, session in
+            weakObserver?.executionDidObserveRuntimeEvent(event, session: session)
+        }
+        terminalCommitBarrier.terminalCommitObserver = { outcome, tabID in
+            weakObserver?.executionDidCommitTerminalOutcome(outcome, tabID: tabID)
+        }
     }
 
     @discardableResult
@@ -227,9 +250,9 @@ final class AgentModeRunService {
               attachments.isEmpty,
               session.runID == targetRunID,
               session.activeRunAttemptID == targetRunAttemptID,
-              session.acpController === targetController
+              session.inProcessExecution.acpController === targetController
         else {
-            steeringDebugLog("[AgentRunSteeringWake] ACP active submit guard rejected agent=\(selectedAgent.rawValue) state=\(session.runState.rawValue) attachments=\(attachments.count) runID=\(String(describing: session.runID)) targetRunID=\(String(describing: targetRunID)) attempt=\(String(describing: session.activeRunAttemptID)) targetAttempt=\(String(describing: targetRunAttemptID)) hasController=\(session.acpController != nil) controllerMatches=\(session.acpController === targetController)")
+            steeringDebugLog("[AgentRunSteeringWake] ACP active submit guard rejected agent=\(selectedAgent.rawValue) state=\(session.runState.rawValue) attachments=\(attachments.count) runID=\(String(describing: session.runID)) targetRunID=\(String(describing: targetRunID)) attempt=\(String(describing: session.activeRunAttemptID)) targetAttempt=\(String(describing: targetRunAttemptID)) hasController=\(session.inProcessExecution.acpController != nil) controllerMatches=\(session.inProcessExecution.acpController === targetController)")
             return false
         }
         let workspacePath: String?
@@ -281,7 +304,7 @@ final class AgentModeRunService {
 
         guard let runID = session.runID,
               let runAttemptID = session.activeRunAttemptID,
-              let controller = session.acpController else { return false }
+              let controller = session.inProcessExecution.acpController else { return false }
 
         let tabID = session.tabID
         steeringDebugLog("[AgentRunSteeringWake] ACP flush start tab=\(tabID) runID=\(runID) attempt=\(runAttemptID) queue=\(session.pendingACPSteeringInstructions.count)")
@@ -451,7 +474,7 @@ final class AgentModeRunService {
             supportsFollowUp: false,
             notifyTurnComplete: false,
             prepareProviderState: {
-                session.provider = nil
+                session.inProcessExecution.provider = nil
                 return nil
             }
         ))
@@ -467,7 +490,7 @@ final class AgentModeRunService {
             && session.selectedAgent.acpProviderID != nil
             && session.runID == runID
             && session.activeRunAttemptID == runAttemptID
-            && session.acpController === controller
+            && session.inProcessExecution.acpController === controller
     }
 
     private func requeueQueuedACPSteeringAsFollowUp(
@@ -563,7 +586,7 @@ final class AgentModeRunService {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !providerTexts.isEmpty else { return }
-        if session.runState == .completed, session.acpController != nil {
+        if session.runState == .completed, session.inProcessExecution.acpController != nil {
             let first = providerTexts.removeFirst()
             if !providerTexts.isEmpty {
                 session.pendingInstructions.insert(contentsOf: providerTexts, at: 0)
@@ -977,8 +1000,8 @@ final class AgentModeRunService {
 
         let ownership = session.activeRunOwnership ?? session.beginRunAttempt(source: "runService.cancel")
         let expectedRunID = session.runID
-        let provider = session.provider
-        let acpController = session.acpController
+        let provider = session.inProcessExecution.provider
+        let acpController = session.inProcessExecution.acpController
         let hasAttemptTerminalResources = session.runAttemptTerminalResources?.ownership == ownership
         let codexCancellationTarget = session.selectedAgent == .codexExec
             ? dependencies.codexCoordinator.captureCodexCancellationTarget(
@@ -1018,7 +1041,7 @@ final class AgentModeRunService {
                 }
                 if session.selectedAgent.usesClaudeNativeRuntime {
                     let oldController = dependencies.claudeCoordinator.prepareClaudeCancelSync(session)
-                    session.provider = nil
+                    session.inProcessExecution.provider = nil
                     return {
                         dependencies.claudeCoordinator.beginClaudeResumeTransferIfNeeded(
                             for: session,
@@ -1028,17 +1051,17 @@ final class AgentModeRunService {
                     }
                 }
                 if let acpController {
-                    if session.acpController === acpController {
-                        session.acpController = nil
+                    if session.inProcessExecution.acpController === acpController {
+                        session.inProcessExecution.acpController = nil
                     }
                     AgentModeProcessRunIdentity.clearProcessRunID(for: session)
-                    session.provider = nil
+                    session.inProcessExecution.provider = nil
                     return {
                         await acpController.cancelPrompt()
                         await acpController.shutdown()
                     }
                 }
-                session.provider = nil
+                session.inProcessExecution.provider = nil
                 // Barrier-validated: the terminal-commit barrier re-checked
                 // expectedRunID synchronously before invoking this closure.
                 AgentModeProcessRunIdentity.clearProcessRunID(for: session)

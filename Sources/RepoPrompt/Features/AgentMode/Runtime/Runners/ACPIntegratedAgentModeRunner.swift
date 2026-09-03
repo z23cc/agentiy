@@ -4,6 +4,28 @@ import RepoPromptDomainRuntime
 
 @MainActor
 final class ACPIntegratedAgentModeRunner {
+    typealias ControllerFactory = (_ provider: any ACPAgentProvider, _ runRequest: ACPRunRequest) throws -> ACPAgentSessionController
+
+    /// Production controller: ACP session backed by the Rust provider runtime transport.
+    static func makeProductionController(
+        provider: any ACPAgentProvider,
+        runRequest: ACPRunRequest
+    ) throws -> ACPAgentSessionController {
+        try ACPAgentSessionController(
+            provider: provider,
+            runRequest: runRequest,
+            runtimeTransport: CoreAgentProviderRuntimeTransport()
+        )
+    }
+
+    /// Controller without the Rust runtime transport; the historical DEBUG test-harness default.
+    static func makeDirectController(
+        provider: any ACPAgentProvider,
+        runRequest: ACPRunRequest
+    ) throws -> ACPAgentSessionController {
+        try ACPAgentSessionController(provider: provider, runRequest: runRequest)
+    }
+
     private enum TransientOperationResult {
         case completed
         case cancelled
@@ -36,7 +58,7 @@ final class ACPIntegratedAgentModeRunner {
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
     private let toolTrackingHooks: AgentToolTrackingHooks
     private let providerFactory: AgentModeViewModel.ACPProviderFactory
-    private let controllerFactory: AgentModeViewModel.ACPControllerFactory
+    private let controllerFactory: ControllerFactory
     private var toolTrackingByTabID: [UUID: AgentToolTrackingController] = [:]
     private var toolTrackingRunIDByTabID: [UUID: UUID] = [:]
     private var acpProviderInvocationByTrackerInvocationIDByTabID: [UUID: [UUID: UUID]] = [:]
@@ -130,13 +152,13 @@ final class ACPIntegratedAgentModeRunner {
         terminalCommitBarrier: AgentRunTerminalCommitBarrier,
         toolTrackingHooks: AgentToolTrackingHooks,
         providerFactory: @escaping AgentModeViewModel.ACPProviderFactory,
-        controllerFactory: @escaping AgentModeViewModel.ACPControllerFactory
+        controllerFactory: ControllerFactory? = nil
     ) {
         self.hooks = hooks
         self.terminalCommitBarrier = terminalCommitBarrier
         self.toolTrackingHooks = toolTrackingHooks
         self.providerFactory = providerFactory
-        self.controllerFactory = controllerFactory
+        self.controllerFactory = controllerFactory ?? Self.makeProductionController
     }
 
     func startRun(
@@ -168,7 +190,7 @@ final class ACPIntegratedAgentModeRunner {
         setRunningStatus(initialTransportStatusText(for: runRequest.agentKind), source: .transport, session: session, urgent: true)
 
         let freshRunRequest = runRequest
-        if let existingController = session.acpController {
+        if let existingController = session.inProcessExecution.acpController {
             let isCompatible = await existingController.isCompatibleWith(request: runRequest)
             guard isStartupStillCurrent(session: session, runAttemptID: runAttemptID) else { return }
             let hasReusableSession = isCompatible ? await existingController.hasReusableSession : false
@@ -220,7 +242,7 @@ final class ACPIntegratedAgentModeRunner {
                 return
             }
 
-            session.acpController = nil
+            session.inProcessExecution.acpController = nil
             AgentModeProcessRunIdentity.clearProcessRunID(for: session)
             await existingController.shutdown()
             guard isStartupStillCurrent(session: session, runAttemptID: runAttemptID) else { return }
@@ -304,7 +326,7 @@ final class ACPIntegratedAgentModeRunner {
         }
 
         await controller.setExpectedMCPRunID(runID)
-        session.acpController = controller
+        session.inProcessExecution.acpController = controller
         let requiresPrePromptMCPRouting = runRequest.agentKind.requiresPrePromptAgentModeMCPRouting
         session.installRunAttemptTerminalResources(ownership: ownership) { [weak self] terminalState in
             let trackerTeardown = self?.prepareToolTrackingTeardown(for: session, matchingRunID: runID)
@@ -362,7 +384,7 @@ final class ACPIntegratedAgentModeRunner {
         guard runRequest.agentKind == session.selectedAgent,
               runRequest.agentKind.acpProviderID != nil,
               session.runState == .running,
-              let controller = session.acpController,
+              let controller = session.inProcessExecution.acpController,
               controller === targetController,
               let runID = session.runID,
               runID == targetRunID,
@@ -370,7 +392,7 @@ final class ACPIntegratedAgentModeRunner {
               runAttemptID == targetRunAttemptID
         else {
             let diagnosticRunID = session.runID ?? targetRunID ?? UUID()
-            log("active prompt preflight rejected selected=\(session.selectedAgent.rawValue) request=\(runRequest.agentKind.rawValue) state=\(session.runState.rawValue) runID=\(String(describing: session.runID)) targetRunID=\(String(describing: targetRunID)) attempt=\(String(describing: session.activeRunAttemptID)) targetAttempt=\(String(describing: targetRunAttemptID)) hasController=\(session.acpController != nil) controllerMatches=\(session.acpController === targetController)", runID: diagnosticRunID)
+            log("active prompt preflight rejected selected=\(session.selectedAgent.rawValue) request=\(runRequest.agentKind.rawValue) state=\(session.runState.rawValue) runID=\(String(describing: session.runID)) targetRunID=\(String(describing: targetRunID)) attempt=\(String(describing: session.activeRunAttemptID)) targetAttempt=\(String(describing: targetRunAttemptID)) hasController=\(session.inProcessExecution.acpController != nil) controllerMatches=\(session.inProcessExecution.acpController === targetController)", runID: diagnosticRunID)
             return false
         }
         guard await controller.isCompatibleWith(request: runRequest) else {
@@ -380,7 +402,7 @@ final class ACPIntegratedAgentModeRunner {
         guard session.runState == .running,
               session.runID == runID,
               session.activeRunAttemptID == runAttemptID,
-              session.acpController === controller
+              session.inProcessExecution.acpController === controller
         else {
             log("active prompt preflight became stale after compatibility check state=\(session.runState.rawValue) runID=\(String(describing: session.runID)) attempt=\(String(describing: session.activeRunAttemptID))", runID: runID)
             return false
@@ -406,7 +428,7 @@ final class ACPIntegratedAgentModeRunner {
         guard session.runState == .running,
               session.runID == runID,
               session.activeRunAttemptID == runAttemptID,
-              session.acpController === controller
+              session.inProcessExecution.acpController === controller
         else {
             log("active steering became stale after interrupt state=\(session.runState.rawValue) currentRunID=\(String(describing: session.runID)) currentAttempt=\(String(describing: session.activeRunAttemptID))", runID: runID)
             return false
@@ -487,7 +509,7 @@ final class ACPIntegratedAgentModeRunner {
             supportsFollowUp: false,
             notifyTurnComplete: false,
             prepareProviderState: {
-                session.acpController = nil
+                session.inProcessExecution.acpController = nil
                 AgentModeProcessRunIdentity.clearProcessRunID(for: session)
                 return nil
             }
@@ -517,7 +539,7 @@ final class ACPIntegratedAgentModeRunner {
             supportsFollowUp: false,
             notifyTurnComplete: false,
             prepareProviderState: {
-                session.acpController = nil
+                session.inProcessExecution.acpController = nil
                 AgentModeProcessRunIdentity.clearProcessRunID(for: session)
                 return nil
             }
@@ -962,8 +984,8 @@ final class ACPIntegratedAgentModeRunner {
             supportsFollowUp: false,
             notifyTurnComplete: false,
             prepareProviderState: {
-                if session.acpController === controller {
-                    session.acpController = nil
+                if session.inProcessExecution.acpController === controller {
+                    session.inProcessExecution.acpController = nil
                 }
                 AgentModeProcessRunIdentity.clearProcessRunID(for: session)
                 return { await controller.shutdown() }
@@ -1028,11 +1050,11 @@ final class ACPIntegratedAgentModeRunner {
             prepareProviderState: {
                 session.pendingSupersedingTurnCompletions = 0
                 if outcome.kind != .completed {
-                    if let controller, session.acpController === controller {
-                        session.acpController = nil
+                    if let controller, session.inProcessExecution.acpController === controller {
+                        session.inProcessExecution.acpController = nil
                     }
                     AgentModeProcessRunIdentity.clearProcessRunID(for: session)
-                } else if session.acpController == nil {
+                } else if session.inProcessExecution.acpController == nil {
                     AgentModeProcessRunIdentity.clearProcessRunID(for: session)
                 }
                 return {

@@ -56,7 +56,7 @@
             session.runState = .idle
             AgentModeProcessRunIdentity.clearProcessRunID(for: session)
             session.endCurrentRunAttempt(source: "stress.reset")
-            session.provider = nil
+            session.inProcessExecution.provider = nil
             session.agentTask?.cancel()
             session.agentTask = nil
             session.providerSessionID = nil
@@ -71,9 +71,9 @@
             session.contextUsageSnapshot = nil
             session.contextCompactedAt = nil
             session.codexNeedsReconnect = false
-            session.codexController = nil
-            session.codexControllerPermissionProfile = nil
-            session.codexControllerTaskLabelKind = nil
+            session.inProcessExecution.codexController = nil
+            session.inProcessExecution.codexControllerPermissionProfile = nil
+            session.inProcessExecution.codexControllerTaskLabelKind = nil
             claudeCoordinator.test_discardRuntimeState(for: session)
             session.codexEventTask?.cancel()
             session.codexEventTask = nil

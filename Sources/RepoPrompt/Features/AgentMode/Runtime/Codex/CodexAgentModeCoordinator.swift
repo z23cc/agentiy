@@ -367,10 +367,49 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     private static let repeatedResumeTimeoutFallbackThreshold = 2
     private let preferenceDefaults: UserDefaults
 
+    /// Production Codex controller: app-server client over the Rust provider runtime
+    /// transport with the Agent Mode default options. Lives execution-side so the view
+    /// model never constructs provider clients.
+    static func makeProductionController(
+        runID: UUID,
+        tabID: UUID,
+        windowID: Int,
+        workspacePaths: CodexRuntimeWorkspacePaths,
+        permissionProfile: AgentModeViewModel.AgentPermissionProfile,
+        taskLabelKind _: AgentModelCatalog.TaskLabelKind?,
+        computerUseEnabled: Bool
+    ) -> any CodexSessionControlling {
+        let client = CodexAppServerClient(
+            provisionsRepoPromptMCPOnStart: false,
+            runtimeTransport: CoreAgentProviderRuntimeTransport()
+        )
+        let options = CodexNativeSessionController.Options.agentModeDefault(
+            approvalPolicyProvider: { permissionProfile.codexApprovalPolicy },
+            sandboxModeProvider: { permissionProfile.codexSandboxMode },
+            approvalReviewerProvider: { permissionProfile.codexApprovalReviewer },
+            shellToolEnabled: permissionProfile.codexBashToolEnabled(),
+            suppressThirdPartyMCPServers: permissionProfile.codexSuppressesThirdPartyMCPServers,
+            goalSupportEnabledProvider: { CodexGoalSupport.isEnabled },
+            reasoningSummariesEnabledProvider: { CodexReasoningSummaries.isEnabled },
+            memoriesEnabledProvider: { CodexMemories.isEnabled },
+            computerUseEnabledProvider: { computerUseEnabled }
+        )
+        return CodexNativeSessionController(
+            client: client,
+            runID: runID,
+            tabID: tabID,
+            windowID: windowID,
+            workspacePaths: workspacePaths,
+            options: options,
+            clientShutdownBehavior: .stopOnShutdown,
+            expectedMCPClientName: AgentProviderKind.codexExec.mcpClientNameHint
+        )
+    }
+
     init(
         windowID: Int,
         runtimeWorkspacePathsProvider: @escaping (AgentTabSession) throws -> CodexRuntimeWorkspacePaths,
-        codexControllerFactory: @escaping CodexControllerFactory,
+        codexControllerFactory: CodexControllerFactory? = nil,
         connectionPolicyInstaller: @escaping ConnectionPolicyInstaller,
         shouldManageCodexTooling: Bool,
         authRecovery: any CodexManagedAuthRecovering = CodexManagedAuthRecoveryService.shared,
@@ -391,7 +430,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) {
         self.windowID = windowID
         self.runtimeWorkspacePathsProvider = runtimeWorkspacePathsProvider
-        self.codexControllerFactory = codexControllerFactory
+        self.codexControllerFactory = codexControllerFactory ?? Self.makeProductionController
         self.connectionPolicyInstaller = connectionPolicyInstaller
         self.shouldManageCodexTooling = shouldManageCodexTooling
         self.authRecovery = authRecovery
@@ -501,7 +540,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
               session.runState.isActive,
               session.codexWatchdogState.progressGeneration == expectedProgressGeneration,
               !hasPendingCodexInteraction(for: session),
-              let activeController = session.codexController,
+              let activeController = session.inProcessExecution.codexController,
               Self.sameCodexControllerInstance(activeController, controller)
         else {
             recordCodexWatchdogTransition(
@@ -649,9 +688,9 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         @MainActor
         func isCurrent(in session: AgentTabSession) -> Bool {
             guard session.codexHookGateAttemptToken == attemptToken,
-                  let currentController = session.codexController,
+                  let currentController = session.inProcessExecution.codexController,
                   ObjectIdentifier(currentController as AnyObject) == binding.controllerInstanceID,
-                  binding.controllerGeneration == session.codexControllerGeneration
+                  binding.controllerGeneration == session.inProcessExecution.codexControllerGeneration
             else {
                 return false
             }
@@ -672,7 +711,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) -> AgentTabSession.CodexHookGateBindingIdentity {
         .init(
             controllerInstanceID: ObjectIdentifier(controller),
-            controllerGeneration: session.codexControllerGeneration
+            controllerGeneration: session.inProcessExecution.codexControllerGeneration
         )
     }
 
@@ -681,7 +720,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session: AgentTabSession,
         controller: any CodexSessionControlling
     ) -> Bool {
-        guard let currentController = session.codexController else { return false }
+        guard let currentController = session.inProcessExecution.codexController else { return false }
         return Self.sameCodexControllerInstance(currentController, controller)
             && binding == codexHookGateBinding(for: session, controller: controller)
     }
@@ -690,7 +729,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session: AgentTabSession,
         controller: any CodexSessionControlling
     ) {
-        guard let currentController = session.codexController,
+        guard let currentController = session.inProcessExecution.codexController,
               Self.sameCodexControllerInstance(currentController, controller),
               let reference = controller.currentSessionReference
         else {
@@ -778,7 +817,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     }
 
     private func codexHookExecutionCWD(for session: AgentTabSession) -> String {
-        if let path = session.codexControllerWorkspacePaths?.executionDirectory,
+        if let path = session.inProcessExecution.codexControllerWorkspacePaths?.executionDirectory,
            !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             return path
@@ -945,7 +984,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         guard request.phase != .submitting, request.phase != .discovering else {
             throw AgentCodexHookReviewResolutionError.busy
         }
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               let binding = session.codexHookGateActiveBinding,
               request.gateGeneration == session.codexHookGateGeneration,
               isCurrentCodexHookGateBinding(binding, session: session, controller: controller)
@@ -2317,8 +2356,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 return CodexGoalSupport.disabledMessage
             }
             if runState.isActive,
-               session.codexController != nil,
-               session.codexControllerFeatureState?.goalSupportEnabled == false
+               session.inProcessExecution.codexController != nil,
+               session.inProcessExecution.codexControllerFeatureState?.goalSupportEnabled == false
             {
                 return "Codex goal support will be available after the current Codex turn finishes and reconnects."
             }
@@ -2365,14 +2404,14 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         if let message = nativeSlashCommandAvailabilityMessage(.compact, session: session) {
             return .failed(message)
         }
-        if session.codexController == nil, hasPersistedCodexThreadMetadata(session) {
+        if session.inProcessExecution.codexController == nil, hasPersistedCodexThreadMetadata(session) {
             session.codexNeedsReconnect = true
         }
         await ensureCodexNativeSession(
             session: session,
             allowResumeTimeoutFallback: false
         )
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               controller.hasActiveThread
         else {
             return .failed("Start a Codex conversation before using /compact.")
@@ -2416,7 +2455,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         ) {
             return .failed(message)
         }
-        if session.codexController == nil, hasPersistedCodexThreadMetadata(session) {
+        if session.inProcessExecution.codexController == nil, hasPersistedCodexThreadMetadata(session) {
             session.codexNeedsReconnect = true
         }
         await ensureCodexNativeSession(
@@ -2432,7 +2471,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 effectiveRunState: effectiveRunState
             )
         }
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               controller.hasActiveThread
         else {
             return .failed("Codex goal command failed: session not ready.")
@@ -2567,8 +2606,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session: AgentTabSession,
         sourceController: (any CodexSessionControlling)?
     ) -> AgentTabSession.CodexTurnKind? {
-        guard let controller = sourceController ?? session.codexController,
-              let activeController = session.codexController,
+        guard let controller = sourceController ?? session.inProcessExecution.codexController,
+              let activeController = session.inProcessExecution.codexController,
               Self.sameCodexControllerInstance(activeController, controller),
               let threadID = session.codexConversationID,
               let runAttemptID = session.activeRunAttemptID
@@ -2598,7 +2637,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 turnID: turnID,
                 turnKind: kind,
                 controllerInstanceID: controllerInstanceID,
-                controllerGeneration: session.codexControllerGeneration,
+                controllerGeneration: session.inProcessExecution.codexControllerGeneration,
                 runID: session.runID,
                 runAttemptID: runAttemptID
             )
@@ -2646,7 +2685,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             threadID: threadID,
             turnKind: kind,
             controllerInstanceID: controllerInstanceID,
-            controllerGeneration: session.codexControllerGeneration,
+            controllerGeneration: session.inProcessExecution.codexControllerGeneration,
             runID: session.runID,
             runAttemptID: runAttemptID
         )
@@ -2791,10 +2830,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         _ identity: AgentTabSession.CodexAuthoritativeTurnIdentity,
         session: AgentTabSession
     ) -> Bool {
-        guard let controller = session.codexController else { return false }
+        guard let controller = session.inProcessExecution.codexController else { return false }
         return identity.threadID == session.codexConversationID
             && identity.controllerInstanceID == ObjectIdentifier(controller)
-            && identity.controllerGeneration == session.codexControllerGeneration
+            && identity.controllerGeneration == session.inProcessExecution.codexControllerGeneration
             && identity.runID == session.runID
             && identity.runAttemptID == session.activeRunAttemptID
     }
@@ -2803,10 +2842,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         _ identity: AgentTabSession.CodexAnonymousTurnLiveness,
         session: AgentTabSession
     ) -> Bool {
-        guard let controller = session.codexController else { return false }
+        guard let controller = session.inProcessExecution.codexController else { return false }
         return identity.threadID == session.codexConversationID
             && identity.controllerInstanceID == ObjectIdentifier(controller)
-            && identity.controllerGeneration == session.codexControllerGeneration
+            && identity.controllerGeneration == session.inProcessExecution.codexControllerGeneration
             && identity.runID == session.runID
             && identity.runAttemptID == session.activeRunAttemptID
     }
@@ -2881,7 +2920,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) async {
         guard session.codexAuthoritativeActiveTurn == identity,
               authoritativeCodexTurnIsCurrent(identity, session: session),
-              session.codexController.map(ObjectIdentifier.init) == ObjectIdentifier(controller)
+              session.inProcessExecution.codexController.map(ObjectIdentifier.init) == ObjectIdentifier(controller)
         else { return }
         logCodex(
             "[AgentModeVM] sendCodexNativeMessage: steer accepted into different turn expected=\(identity.turnID) actual=\(acceptedTurnID); reconciling without resend"
@@ -3010,7 +3049,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             fallbackReason: reason,
             originThreadID: threadID,
             originControllerInstanceID: ObjectIdentifier(controller),
-            originControllerGeneration: session.codexControllerGeneration,
+            originControllerGeneration: session.inProcessExecution.codexControllerGeneration,
             originRunID: runID,
             originRunAttemptID: runAttemptID,
             blockingTurn: recoverableCodexFallbackBlockingTurn(session: session),
@@ -3065,9 +3104,9 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                   head.id == queueID,
                   head.state == .queued,
                   case .noActiveTurn = head.fallbackReason,
-                  let controller = session.codexController,
+                  let controller = session.inProcessExecution.codexController,
                   ObjectIdentifier(controller) == head.originControllerInstanceID,
-                  session.codexControllerGeneration == head.originControllerGeneration,
+                  session.inProcessExecution.codexControllerGeneration == head.originControllerGeneration,
                   session.codexConversationID == head.originThreadID,
                   session.runID == head.originRunID,
                   session.activeRunAttemptID == head.originRunAttemptID
@@ -3141,9 +3180,9 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         guard session.codexFallbackDispatchInFlight == nil,
               var head = session.codexFallbackQueue.first,
               head.id == expectedQueueID,
-              let controller = session.codexController,
+              let controller = session.inProcessExecution.codexController,
               ObjectIdentifier(controller) == head.originControllerInstanceID,
-              session.codexControllerGeneration == head.originControllerGeneration,
+              session.inProcessExecution.codexControllerGeneration == head.originControllerGeneration,
               session.codexConversationID == head.originThreadID,
               session.runID == head.originRunID
         else { return nil }
@@ -3186,7 +3225,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) async -> Bool {
         guard let queuedHead = session.codexFallbackQueue.first,
               queuedHead.id == expectedQueueID,
-              let controller = session.codexController,
+              let controller = session.inProcessExecution.codexController,
               ObjectIdentifier(controller) == queuedHead.originControllerInstanceID
         else {
             return false
@@ -3225,7 +3264,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         _ head: AgentTabSession.CodexFallbackQueueEntry,
         session: AgentTabSession
     ) async -> Bool {
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               ObjectIdentifier(controller) == head.originControllerInstanceID
         else {
             await failCodexFallbackDispatch(
@@ -3246,7 +3285,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             )
             guard var inFlight = session.codexFallbackDispatchInFlight,
                   inFlight.id == head.id,
-                  session.codexController.map(ObjectIdentifier.init) == head.originControllerInstanceID
+                  session.inProcessExecution.codexController.map(ObjectIdentifier.init) == head.originControllerInstanceID
             else { return true }
             if case .lifecycleStarted = inFlight.state {
                 session.codexFallbackDispatchInFlight = nil
@@ -3474,7 +3513,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         return .init(
             ownerToken: ownerToken,
             controllerInstanceID: ObjectIdentifier(controller),
-            controllerGeneration: session.codexControllerGeneration,
+            controllerGeneration: session.inProcessExecution.codexControllerGeneration,
             threadID: threadID,
             runID: session.runID,
             runAttemptID: runAttemptID
@@ -3524,9 +3563,9 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) {
         guard let scope,
               session.codexHookGateDispatchOwnerToken == scope.ownerToken,
-              let controller = session.codexController,
+              let controller = session.inProcessExecution.codexController,
               ObjectIdentifier(controller) == scope.controllerInstanceID,
-              session.codexControllerGeneration == scope.controllerGeneration,
+              session.inProcessExecution.codexControllerGeneration == scope.controllerGeneration,
               session.codexConversationID == scope.threadID,
               session.runID == scope.runID,
               session.activeRunAttemptID == scope.runAttemptID,
@@ -3666,7 +3705,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
               let queuedHead = session.codexFallbackQueue.first,
               queuedHead.state == .queued,
               queuedHead.blockingTurn == codexFallbackBlockingTurn(for: completedIdentity),
-              let controller = session.codexController,
+              let controller = session.inProcessExecution.codexController,
               ObjectIdentifier(controller) == queuedHead.originControllerInstanceID
         else { return nil }
         let hookGateDispatchOwnerToken: UUID?
@@ -3841,7 +3880,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     }
 
     private func hasKnownCodexThread(_ session: AgentTabSession) -> Bool {
-        if session.codexController?.hasActiveThread == true {
+        if session.inProcessExecution.codexController?.hasActiveThread == true {
             return true
         }
         return hasPersistedCodexThreadMetadata(session)
@@ -3930,7 +3969,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             cancelCodexIdleShutdown(for: session.tabID)
             cancelCodexTransportClosedFallback(for: session.tabID)
             stopCodexStallWatchdog(for: session.tabID)
-            if let controller = session.codexController {
+            if let controller = session.inProcessExecution.codexController {
                 retireCodexController(
                     controller,
                     tabID: session.tabID,
@@ -4308,7 +4347,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         controller: any CodexSessionControlling
     ) -> Bool {
         session.runID == sendRunID
-            && session.codexController.map { sameCodexControllerInstance($0, controller) } == true
+            && session.inProcessExecution.codexController.map { sameCodexControllerInstance($0, controller) } == true
     }
 
     private func clearCodexRecoveryAttempt(
@@ -4344,7 +4383,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         source: String
     ) {
         guard session.selectedAgent == .codexExec,
-              let controller = session.codexController
+              let controller = session.inProcessExecution.codexController
         else { return }
         let validatedName = AgentSession.validatedName(rawName ?? "")
         guard !validatedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -4383,7 +4422,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             guard let pending = pendingCodexThreadNameSyncByTabID.removeValue(forKey: tabID) else { return }
             guard let session = weakSession,
                   session.selectedAgent == .codexExec,
-                  let activeController = session.codexController,
+                  let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, pending.controller)
             else {
                 continue
@@ -4556,7 +4595,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
               let runID = session.runID,
               let runAttemptID = session.activeRunAttemptID,
               let sourceController,
-              let activeController = session.codexController,
+              let activeController = session.inProcessExecution.codexController,
               Self.sameCodexControllerInstance(activeController, sourceController),
               let normalizedTurnID = turnID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !normalizedTurnID.isEmpty,
@@ -4593,7 +4632,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
               reconciliation.runID == session.runID,
               reconciliation.runAttemptID == session.activeRunAttemptID,
               session.runState.isActive,
-              let activeController = session.codexController,
+              let activeController = session.inProcessExecution.codexController,
               Self.sameCodexControllerInstance(activeController, controller),
               let completion = reconciliation.bufferedCompletion
         else {
@@ -4745,7 +4784,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             }
         }
         if let sourceController {
-            guard let activeController = session.codexController,
+            guard let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, sourceController)
             else {
                 return .skipped
@@ -4776,7 +4815,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 logCodex("[AgentModeVM][CodexWatchdog] suppressing watchdog for tab \(session.tabID) while strong local tool liveness remains active reasons=\(hardToolReasonsBeforeProbe.joined(separator: ","))")
                 return .skipped
             }
-            guard let probeController = sourceController ?? session.codexController else {
+            guard let probeController = sourceController ?? session.inProcessExecution.codexController else {
                 return .unrecoverable(recoveryFailureMessage(for: trigger))
             }
             do {
@@ -4972,7 +5011,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             }
         }
         if let sourceController {
-            guard let activeController = session.codexController,
+            guard let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, sourceController)
             else {
                 return .skipped
@@ -5051,7 +5090,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         )
         if !invalidated {
             if let sourceController,
-               let activeController = session.codexController,
+               let activeController = session.inProcessExecution.codexController,
                !Self.sameCodexControllerInstance(activeController, sourceController)
             {
                 return .skipped
@@ -5067,7 +5106,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             preserveExistingRunID: true
         )
 
-        if let recoveredController = session.codexController,
+        if let recoveredController = session.inProcessExecution.codexController,
            await replayBufferedCodexTurnCompletionIfNeeded(
                reconciliationToken: reattachReconciliationToken,
                session: session,
@@ -5080,7 +5119,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         guard session.runID == runID,
               session.activeRunAttemptID == expectedRunAttemptID,
               session.runState.isActive,
-              let recoveredController = session.codexController,
+              let recoveredController = session.inProcessExecution.codexController,
               recoveredController.hasActiveThread
         else {
             let alreadyReportedStartFailure = session.items.last.map {
@@ -5124,7 +5163,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             guard session.runID == runID,
                   session.activeRunAttemptID == expectedRunAttemptID,
                   session.runState.isActive,
-                  let activeController = session.codexController,
+                  let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, recoveredController)
             else {
                 return .skipped
@@ -5264,7 +5303,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             allowResumeTimeoutFallback: false
         )
         guard session.runState.isActive,
-              let controller = session.codexController,
+              let controller = session.inProcessExecution.codexController,
               controller.hasActiveThread,
               let replayTurn = session.codexPendingAuthRetryTurn
         else {
@@ -5352,8 +5391,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     }
 
     private func codexFeatureReconnectSource(
-        previous: AgentTabSession.CodexControllerFeatureState?,
-        desired: AgentTabSession.CodexControllerFeatureState
+        previous: InProcessAgentSessionExecutionState.CodexControllerFeatureState?,
+        desired: InProcessAgentSessionExecutionState.CodexControllerFeatureState
     ) -> String {
         guard let previous else { return "feature-state-unknown" }
         if previous.computerUseEnabled != desired.computerUseEnabled {
@@ -5378,11 +5417,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     /// tracking — stays with each teardown path.
     private func clearCodexControllerInstanceState(for session: AgentTabSession) {
         abandonCodexFallbackQueueForRetiredCodexController(session: session)
-        session.codexController = nil
-        session.codexControllerPermissionProfile = nil
-        session.codexControllerTaskLabelKind = nil
-        session.codexControllerWorkspacePaths = nil
-        session.codexControllerFeatureState = nil
+        session.inProcessExecution.codexController = nil
+        session.inProcessExecution.codexControllerPermissionProfile = nil
+        session.inProcessExecution.codexControllerTaskLabelKind = nil
+        session.inProcessExecution.codexControllerWorkspacePaths = nil
+        session.inProcessExecution.codexControllerFeatureState = nil
     }
 
     /// Queued follow-ups are pinned to the controller instance that accepted them, so a
@@ -5390,7 +5429,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     /// ever match them again. Returning them to the composer is the only disposition that does
     /// not silently drop the user's text.
     private func abandonCodexFallbackQueueForRetiredCodexController(session: AgentTabSession) {
-        guard session.codexController != nil,
+        guard session.inProcessExecution.codexController != nil,
               !session.codexFallbackQueue.isEmpty
               || session.codexFallbackDispatchInFlight != nil
               || session.codexFallbackHookGateOwnerBlocker != nil
@@ -5479,14 +5518,14 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) -> Bool {
         let controllerToShutdown: (any CodexSessionControlling)?
         if let expectedController {
-            guard let activeController = session.codexController,
+            guard let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, expectedController)
             else {
                 return false
             }
             controllerToShutdown = activeController
         } else {
-            controllerToShutdown = session.codexController
+            controllerToShutdown = session.inProcessExecution.codexController
         }
         markCodexReconnectNeeded(for: session, source: source)
         if cancelStallWatchdog {
@@ -5535,7 +5574,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                       session.selectedAgent == .codexExec,
                       session.runState.isActive,
                       !self.hasPendingCodexInteraction(for: session),
-                      let activeController = session.codexController,
+                      let activeController = session.inProcessExecution.codexController,
                       Self.sameCodexControllerInstance(activeController, sourceController)
                 else {
                     return
@@ -5637,7 +5676,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         let message = "\(failurePrefix) \(Self.providerStartupFailureMessage(for: error))"
         _ = invalidateCodexControllerForReconnect(
             session: session,
-            expectedController: session.codexController,
+            expectedController: session.inProcessExecution.codexController,
             source: "mcp-routing-readiness",
             preserveRunID: true
         )
@@ -5672,7 +5711,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session: AgentTabSession,
         controller: any CodexSessionControlling
     ) async {
-        if let activeController = session.codexController,
+        if let activeController = session.inProcessExecution.codexController,
            Self.sameCodexControllerInstance(activeController, controller)
         {
             cancelCodexThreadNameSync(for: session.tabID)
@@ -5728,7 +5767,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         cancelCodexIdleShutdown(for: session.tabID)
 
         if session.codexNeedsReconnect,
-           let activeController = session.codexController,
+           let activeController = session.inProcessExecution.codexController,
            activeController.hasActiveThread
         {
             guard !deferReconnectForCurrentActiveTurn else {
@@ -5761,7 +5800,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         do {
             runtimeWorkspacePaths = try runtimeWorkspacePathsProvider(session)
         } catch {
-            let controllerToShutdown = session.codexController
+            let controllerToShutdown = session.inProcessExecution.codexController
             await failCodexStartupForWorkspaceResolution(session: session, error: error)
             if let controllerToShutdown {
                 await retireCodexControllerAfterWorkspaceResolutionFailure(
@@ -5779,28 +5818,28 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             session.pendingCodexComputerUseActivation = nil
         }
         var wantsComputerUse = session.wantsCodexComputerUseForNextTurn && codexComputerUseFeatureEnabled
-        var desiredFeatureState = AgentTabSession.CodexControllerFeatureState(
+        var desiredFeatureState = InProcessAgentSessionExecutionState.CodexControllerFeatureState(
             computerUseEnabled: wantsComputerUse,
             goalSupportEnabled: wantsGoalSupport,
             reasoningSummariesEnabled: wantsReasoningSummaries,
             memoriesEnabled: wantsMemories
         )
-        if let existingController = session.codexController,
-           session.codexControllerFeatureState != desiredFeatureState
+        if let existingController = session.inProcessExecution.codexController,
+           session.inProcessExecution.codexControllerFeatureState != desiredFeatureState
         {
             _ = invalidateCodexControllerForReconnect(
                 session: session,
                 expectedController: existingController,
                 source: codexFeatureReconnectSource(
-                    previous: session.codexControllerFeatureState,
+                    previous: session.inProcessExecution.codexControllerFeatureState,
                     desired: desiredFeatureState
                 )
             )
         }
         // A controller with no recorded pair keys as nil/nil — the shape of a session without
         // any workspace — so it is only replaced when the runtime pair actually differs.
-        if let existingController = session.codexController,
-           session.codexControllerWorkspacePaths ?? .uniform(nil) != runtimeWorkspacePaths
+        if let existingController = session.inProcessExecution.codexController,
+           session.inProcessExecution.codexControllerWorkspacePaths ?? .uniform(nil) != runtimeWorkspacePaths
         {
             _ = invalidateCodexControllerForReconnect(
                 session: session,
@@ -5808,9 +5847,9 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 source: "workspace-path-change"
             )
         }
-        if let existingController = session.codexController,
-           let existingProfile = session.codexControllerPermissionProfile,
-           existingProfile != controllerPermissionProfile || session.codexControllerTaskLabelKind != currentTaskLabelKind
+        if let existingController = session.inProcessExecution.codexController,
+           let existingProfile = session.inProcessExecution.codexControllerPermissionProfile,
+           existingProfile != controllerPermissionProfile || session.inProcessExecution.codexControllerTaskLabelKind != currentTaskLabelKind
         {
             let source = existingProfile != controllerPermissionProfile
                 ? "permission-profile-change"
@@ -5826,7 +5865,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             if preserveExistingRunID, let existingRunID = session.runID {
                 return existingRunID
             }
-            if let existingController = session.codexController {
+            if let existingController = session.inProcessExecution.codexController {
                 _ = existingController
                 if let existingRunID = session.runID {
                     return existingRunID
@@ -5850,7 +5889,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             do {
                 refreshedWorkspacePaths = try runtimeWorkspacePathsProvider(session)
             } catch {
-                let controllerToShutdown = session.codexController
+                let controllerToShutdown = session.inProcessExecution.codexController
                 await failCodexStartupForWorkspaceResolution(session: session, error: error)
                 if let controllerToShutdown {
                     await retireCodexControllerAfterWorkspaceResolutionFailure(
@@ -5868,18 +5907,18 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             }
             let refreshedWantsComputerUse = session.wantsCodexComputerUseForNextTurn
                 && refreshedComputerUseFeatureEnabled
-            let refreshedFeatureState = AgentTabSession.CodexControllerFeatureState(
+            let refreshedFeatureState = InProcessAgentSessionExecutionState.CodexControllerFeatureState(
                 computerUseEnabled: refreshedWantsComputerUse,
                 goalSupportEnabled: CodexGoalSupport.isEnabled,
                 reasoningSummariesEnabled: CodexReasoningSummaries.isEnabled,
                 memoriesEnabled: CodexMemories.isEnabled
             )
 
-            if let existingController = session.codexController,
-               session.codexControllerWorkspacePaths ?? .uniform(nil) != refreshedWorkspacePaths
-               || session.codexControllerPermissionProfile != refreshedPermissionProfile
-               || session.codexControllerTaskLabelKind != refreshedTaskLabelKind
-               || session.codexControllerFeatureState != refreshedFeatureState
+            if let existingController = session.inProcessExecution.codexController,
+               session.inProcessExecution.codexControllerWorkspacePaths ?? .uniform(nil) != refreshedWorkspacePaths
+               || session.inProcessExecution.codexControllerPermissionProfile != refreshedPermissionProfile
+               || session.inProcessExecution.codexControllerTaskLabelKind != refreshedTaskLabelKind
+               || session.inProcessExecution.codexControllerFeatureState != refreshedFeatureState
             {
                 guard invalidateCodexControllerForReconnect(
                     session: session,
@@ -5898,7 +5937,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             wantsComputerUse = refreshedWantsComputerUse
             desiredFeatureState = refreshedFeatureState
 
-            if session.codexController == nil {
+            if session.inProcessExecution.codexController == nil {
                 let controller = codexControllerFactory(
                     runID,
                     session.tabID,
@@ -5913,13 +5952,13 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     await controller.shutdown()
                     return nil
                 }
-                session.codexController = controller
-                session.codexControllerPermissionProfile = controllerPermissionProfile
-                session.codexControllerTaskLabelKind = currentTaskLabelKind
-                session.codexControllerWorkspacePaths = runtimeWorkspacePaths
-                session.codexControllerFeatureState = desiredFeatureState
+                session.inProcessExecution.codexController = controller
+                session.inProcessExecution.codexControllerPermissionProfile = controllerPermissionProfile
+                session.inProcessExecution.codexControllerTaskLabelKind = currentTaskLabelKind
+                session.inProcessExecution.codexControllerWorkspacePaths = runtimeWorkspacePaths
+                session.inProcessExecution.codexControllerFeatureState = desiredFeatureState
             }
-            guard let controller = session.codexController,
+            guard let controller = session.inProcessExecution.codexController,
                   managedSessionFence.allowsCodexSessionInstallation(sessionInstallationToken)
             else { return nil }
             controller.ensureEventsStreamReady()
@@ -5938,7 +5977,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                         guard !Task.isCancelled else { break }
                         // Guard against stale events from a previous run reaching a new session.
                         guard session.runID == taskRunID else { break }
-                        guard let activeController = session.codexController,
+                        guard let activeController = session.inProcessExecution.codexController,
                               Self.sameCodexControllerInstance(activeController, controller)
                         else {
                             break
@@ -6016,7 +6055,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         }
         guard await prepareCodexController() != nil else { return }
 
-        let hasActiveThread = session.codexController?.hasActiveThread == true
+        let hasActiveThread = session.inProcessExecution.codexController?.hasActiveThread == true
 
         let requiresTransportStart = !hasActiveThread || session.codexNeedsReconnect
         let shouldBootstrapSessionInitialization = effectiveRunState.isActive || requiresTransportStart
@@ -6030,7 +6069,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             && !hasLiveRunRoute
         if shouldForceReconnectForMissingLiveRoute {
             logCodex("[AgentModeVM][CodexReconnect] forcing reconnect for tab \(session.tabID) because run \(runID) has cached tool policy but no live MCP route")
-            let expectedController = session.codexController
+            let expectedController = session.inProcessExecution.codexController
             _ = invalidateCodexControllerForReconnect(
                 session: session,
                 expectedController: expectedController,
@@ -6086,13 +6125,13 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             let routingReadinessStartupDisposition = session.codexNativeStartupDisposition
                 ?? (routingReadinessAttemptedResume ? .resumed : .fresh)
             let providerReady = effectiveRunState.isActive
-                && session.codexController?.hasActiveThread == true
+                && session.inProcessExecution.codexController?.hasActiveThread == true
             await lease.providerInitializationCompleted(
                 provider: AgentProviderKind.codexExec.rawValue,
                 outcome: providerReady ? "ready" : (Task.isCancelled ? "cancelled" : "failed")
             )
             guard effectiveRunState.isActive,
-                  session.codexController?.hasActiveThread == true
+                  session.inProcessExecution.codexController?.hasActiveThread == true
             else {
                 // Startup failure path: avoid holding the global gate waiting for
                 // routing, which can add visible latency before the next user send.
@@ -6154,7 +6193,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         let existingRef = shouldSkipTimedOutResumeTarget ? nil : resumeCandidate
         do {
             var startResult = try await startCodexNativeSession(
-                controller: session.codexController,
+                controller: session.inProcessExecution.codexController,
                 existingRef: existingRef,
                 baseInstructions: basePrompt,
                 model: selection.model,
@@ -6191,7 +6230,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 case let .executableUnavailable(message):
                     effectiveError = AIProviderError.invalidConfiguration(detail: message)
                 case .recovered:
-                    let expectedController = session.codexController
+                    let expectedController = session.inProcessExecution.codexController
                     _ = invalidateCodexControllerForReconnect(
                         session: session,
                         expectedController: expectedController,
@@ -6247,7 +6286,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 allowResumeTimeoutFallback: allowResumeTimeoutFallback
             ) {
                 logCodex("[AgentModeVM][CodexReconnect] repeated resume timeout for tab \(session.tabID); retrying with a fresh thread start")
-                let expectedController = session.codexController
+                let expectedController = session.inProcessExecution.codexController
                 _ = invalidateCodexControllerForReconnect(
                     session: session,
                     expectedController: expectedController,
@@ -6283,7 +6322,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     let invalidatedTimedOutController = CodexAppServerClient.isTimeoutError(error)
                         ? invalidateCodexControllerForReconnect(
                             session: session,
-                            expectedController: session.codexController,
+                            expectedController: session.inProcessExecution.codexController,
                             source: "fresh-start-timeout",
                             preserveRunID: preserveExistingRunID
                         )
@@ -6306,7 +6345,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             let invalidatedTimedOutController = isControlPlaneTimeout
                 ? invalidateCodexControllerForReconnect(
                     session: session,
-                    expectedController: session.codexController,
+                    expectedController: session.inProcessExecution.codexController,
                     source: attemptedResume ? "resume-timeout" : "start-timeout",
                     preserveRunID: preserveExistingRunID
                 )
@@ -6454,7 +6493,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             )
             return .cancelled
         }
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               controller.hasActiveThread
         else {
             logCodex("[AgentModeVM] sendCodexNativeMessage: no active thread after ensure, failing run")
@@ -6594,7 +6633,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                           !actualTurnID.isEmpty,
                           session.codexAuthoritativeActiveTurn == identity,
                           authoritativeCodexTurnIsCurrent(identity, session: session),
-                          session.codexController.map(ObjectIdentifier.init) == ObjectIdentifier(controller)
+                          session.inProcessExecution.codexController.map(ObjectIdentifier.init) == ObjectIdentifier(controller)
                     else {
                         throw mismatch
                     }
@@ -6650,7 +6689,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             }
             guard session.runID == sendRunID,
                   session.runState.isActive,
-                  let activeController = session.codexController,
+                  let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, controller)
             else {
                 if case let .mcp(attemptID) = fallbackContext?.origin {
@@ -6811,7 +6850,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         guard shouldManageCodexTooling else { return }
         guard session.selectedAgent == .codexExec else { return }
         guard session.runID == runID else { return }
-        guard session.codexController?.hasActiveThread == true else { return }
+        guard session.inProcessExecution.codexController?.hasActiveThread == true else { return }
         await ensureCodexToolTrackingIfNeeded(for: session, runID: runID)
     }
 
@@ -7672,7 +7711,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 guard let self else { return }
                 viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
                 settleCodexComputerUseActivationAfterTurn(session, reason: reason)
-                if session.codexController != nil {
+                if session.inProcessExecution.codexController != nil {
                     scheduleCodexIdleShutdownIfNeeded(for: session, reason: reason)
                 }
             }
@@ -7693,10 +7732,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) {
         let hadActivation = session.pendingCodexComputerUseActivation != nil
         session.pendingCodexComputerUseActivation = nil
-        guard session.codexControllerFeatureState?.computerUseEnabled == true else { return }
+        guard session.inProcessExecution.codexControllerFeatureState?.computerUseEnabled == true else { return }
         _ = invalidateCodexControllerForReconnect(
             session: session,
-            expectedController: session.codexController,
+            expectedController: session.inProcessExecution.codexController,
             source: "computer-use-turn-finished-\(reason)"
         )
         if hadActivation {
@@ -7754,7 +7793,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) async {
         AgentModeViewModel.logCodexDebug("[AgentModeVM][CodexUI] handleEvent \(debugCodexEventSummary(event)) tab=\(session.tabID)")
         if let sourceController {
-            guard let activeController = session.codexController,
+            guard let activeController = session.inProcessExecution.codexController,
                   Self.sameCodexControllerInstance(activeController, sourceController)
             else {
                 #if DEBUG
@@ -9283,7 +9322,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             return switch await attemptCodexRecovery(
                 session: session,
                 trigger: .stallWatchdog,
-                sourceController: session.codexController,
+                sourceController: session.inProcessExecution.codexController,
                 expectedRunAttemptID: runAttemptID
             ) {
             case .unrecoverable:
@@ -9466,7 +9505,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     ) {
         let runState = effectiveRunState ?? session.runState
         guard session.selectedAgent == .codexExec,
-              session.codexController != nil,
+              session.inProcessExecution.codexController != nil,
               session.pendingApproval == nil,
               !runState.isActive
         else {
@@ -9486,7 +9525,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 guard !Task.isCancelled else { return }
                 guard let session else { return }
                 guard session.selectedAgent == .codexExec,
-                      session.codexController != nil,
+                      session.inProcessExecution.codexController != nil,
                       session.pendingApproval == nil,
                       !session.runState.isActive
                 else {
@@ -9517,7 +9556,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             return
         }
         guard session.selectedAgent == .codexExec,
-              session.codexController != nil,
+              session.inProcessExecution.codexController != nil,
               session.runState.isActive,
               !hasPendingCodexInteraction(for: session)
         else {
@@ -9561,7 +9600,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     guard !Task.isCancelled else { return }
                     guard let session else { return }
                     guard session.selectedAgent == .codexExec,
-                          session.codexController != nil,
+                          session.inProcessExecution.codexController != nil,
                           session.runState.isActive,
                           !hasPendingCodexInteraction(for: session)
                     else {
@@ -9593,7 +9632,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     switch await attemptCodexRecovery(
                         session: session,
                         trigger: .stallWatchdog,
-                        sourceController: session.codexController,
+                        sourceController: session.inProcessExecution.codexController,
                         expectedRunAttemptID: watchdogRunAttemptID
                     ) {
                     case .recovered, .skipped:
@@ -10049,7 +10088,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         decision: AgentApprovalDecision
     ) {
         guard let request = session.pendingApproval,
-              let controller = session.codexController
+              let controller = session.inProcessExecution.codexController
         else {
             return
         }
@@ -10076,7 +10115,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         request: AgentPermissionsRequest,
         decision: AgentApprovalDecision
     ) {
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               session.pendingPermissionsRequest?.id == request.id
         else {
             return
@@ -10102,7 +10141,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         request: AgentMCPElicitationRequest,
         response: AgentMCPElicitationResponse
     ) {
-        guard let controller = session.codexController,
+        guard let controller = session.inProcessExecution.codexController,
               session.pendingMCPElicitationRequest?.id == request.id
         else {
             return
@@ -10131,7 +10170,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         requestID: CodexAppServerRequestID,
         response: AgentRequestUserInputResponse
     ) {
-        guard let controller = session.codexController else {
+        guard let controller = session.inProcessExecution.codexController else {
             return
         }
         Task { [controller] in
@@ -10247,7 +10286,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session.codexNeedsReconnect = false
         session.pendingCodexComputerUseActivation = nil
         clearCodexPendingInteractions(in: session)
-        if let controller = session.codexController {
+        if let controller = session.inProcessExecution.codexController {
             retireCodexController(
                 controller,
                 tabID: session.tabID,
@@ -10291,7 +10330,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         expectedRunID: UUID?
     ) -> CodexCancellationTarget? {
         guard session.selectedAgent == .codexExec,
-              let controller = session.codexController
+              let controller = session.inProcessExecution.codexController
         else { return nil }
         let authoritativeTurnIdentity: AgentTabSession.CodexAuthoritativeTurnIdentity? = if let identity = session.codexAuthoritativeActiveTurn,
                                                                                             identity.runID == expectedRunID,
@@ -10314,7 +10353,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         capturedTarget: CodexCancellationTarget?
     ) -> (@MainActor () async -> Void)? {
         guard session.selectedAgent == .codexExec else { return nil }
-        let controller = capturedTarget?.controller ?? session.codexController
+        let controller = capturedTarget?.controller ?? session.inProcessExecution.codexController
         let authoritativeTurnIdentity = capturedTarget?.authoritativeTurnIdentity
         if session.codexConversationID != nil || session.codexRolloutPath != nil {
             markCodexReconnectNeeded(for: session, source: "user-cancel-detached", scheduleSave: false)
@@ -10403,7 +10442,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         )
         resetTrackedCodexTurns(session)
         session.pendingCodexComputerUseActivation = nil
-        let controllerToRetire = session.codexController
+        let controllerToRetire = session.inProcessExecution.codexController
         clearCodexControllerRuntimeState(for: session)
         if let controllerToRetire {
             retireCodexController(
@@ -10420,7 +10459,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             // entire remaining tab-scoped tail unless the session is still idle.
             guard session.activeRunOwnership == nil,
                   !session.runState.isActive,
-                  session.codexController == nil
+                  session.inProcessExecution.codexController == nil
             else {
                 logCodex("[AgentModeVM][CodexIdle] skipping idle reclaim tail for tab \(session.tabID); session is no longer idle")
                 return
@@ -10469,7 +10508,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         )
         resetTrackedCodexTurns(session)
         session.pendingCodexComputerUseActivation = nil
-        let controller = session.codexController
+        let controller = session.inProcessExecution.codexController
         clearCodexControllerRuntimeState(for: session)
         let toolTracking = toolTrackingByTabID.removeValue(forKey: session.tabID)
         guard controller != nil || toolTracking != nil || !runIDs.isEmpty else {
@@ -10491,7 +10530,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     /// `invalidateCodexControllerForReconnect`, provider switch) synchronously
     /// nils the session's `codexController` in the same main-actor region that
     /// registers the claim, before any await — so the finalize detach, which
-    /// only captures `session.codexController`, can never observe an
+    /// only captures `session.inProcessExecution.codexController`, can never observe an
     /// already-claimed instance.
     func retireDetachedControllerForWorkspaceSwitch(
         _ detached: DetachedCodexController

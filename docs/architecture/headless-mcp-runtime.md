@@ -8,7 +8,7 @@ agentry-mcp --backend headless
 agentry-mcp --backend auto
 ```
 
-`app` remains the default for MCP stdio mode until explicit live and release validation supports a later cutover. `auto` is an explicit preview mode: it performs one bounded connect-only probe of the well-known app bootstrap socket before reading `initialize`, then fixes the selected backend for the process lifetime. It never probes private headless child endpoints and never switches an initialized session. `app` preserves proxy reconnect/replay behavior; `headless` composes the direct runtime. Interactive and exec modes are app-only and reject both `--backend headless` and `--backend auto`.
+`app` remains the default for MCP stdio mode when no `--backend` flag is passed. `auto` is lease-aware (ADR-0011 P8): a live GUI-shaped `DomainWorkspaceAuthorityLease` holder (`mode == "app"`) resolves `.app` without probing, so tools never steal the GUI flock. When the lease is unused, `auto` performs one bounded connect-only probe of the well-known app bootstrap socket before reading `initialize`, then fixes the selected backend for the process lifetime. It never probes private headless child endpoints and never switches an initialized session. `app` preserves proxy reconnect/replay behavior; `headless` composes the direct runtime and fence-claims the same workspace-authority flock. Interactive and exec modes are app-only and reject both `--backend headless` and `--backend auto`. Provider-injected Agentry MCP (`RepoPromptMCPServerConfiguration.repoPrompt`) passes `--backend auto`.
 
 ## Ownership
 
@@ -26,7 +26,7 @@ App-only physical operations are grouped in `MCPAppPhysicalCapabilityAdapters.Ex
 
 Direct mode installs one MCP SDK `Server` over `MCPStdioServerTransport`; it does not add a second JSON-RPC dispatcher. The transport records one accepted-request/delivered-response hop and distinguishes stdin EOF, truncated EOF, read/poll failure, PPID replacement, broken pipe, write failure, and cancellation. Terminal paths enter bounded host drain before runtime shutdown.
 
-Long-running Agent and Context Builder providers receive an explicit run-scoped carrier. The carrier contains a private Unix endpoint, single-use launch token, verified principal/provider identity, and run ID. The endpoint directory is owner-only, the socket is identity-fenced, and token redemption checks runtime generation, peer PID, expiry, scope, and replay before registering a child connection. App-spawned provider children receive explicit `--backend app`; direct-runtime children use the private run-scoped endpoint and never auto-probe the app.
+Long-running Agent and Context Builder providers receive an explicit run-scoped carrier. The carrier contains a private Unix endpoint, single-use launch token, verified principal/provider identity, and run ID. The endpoint directory is owner-only, the socket is identity-fenced, and token redemption checks runtime generation, peer PID, expiry, scope, and replay before registering a child connection. App-spawned provider children receive `--backend auto` (lease-aware: GUI holder → app proxy; unused lease → headless fence-claim). Direct-runtime children use the private run-scoped endpoint and never auto-probe the app.
 
 ## State roots and security defaults
 

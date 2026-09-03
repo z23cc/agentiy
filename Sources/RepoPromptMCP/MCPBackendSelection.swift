@@ -29,15 +29,22 @@ struct MCPBackendDecision: Equatable {
 enum MCPBackendSelection {
     static func decide(
         requested: MCPBackend,
-        appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable
+        appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable,
+        liveGUIWorkspaceHolder: () -> Bool = { false }
     ) -> MCPBackendDecision {
         switch requested {
         case .app:
-            MCPBackendDecision(requested: requested, resolved: .app, probeCount: 0)
+            return MCPBackendDecision(requested: requested, resolved: .app, probeCount: 0)
         case .headless:
-            MCPBackendDecision(requested: requested, resolved: .headless, probeCount: 0)
+            return MCPBackendDecision(requested: requested, resolved: .headless, probeCount: 0)
         case .auto:
-            MCPBackendDecision(
+            // Lease is the GUI-presence authority (P8). A live GUI-shaped holder
+            // keeps `--backend app` so we do not steal the GUI flock. Socket probe
+            // remains the existing auto fallback when the lease is unused.
+            if liveGUIWorkspaceHolder() {
+                return MCPBackendDecision(requested: requested, resolved: .app, probeCount: 0)
+            }
+            return MCPBackendDecision(
                 requested: requested,
                 resolved: appIsAvailable() ? .app : .headless,
                 probeCount: 1
@@ -47,9 +54,14 @@ enum MCPBackendSelection {
 
     static func resolve(
         requested: MCPBackend,
-        appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable
+        appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable,
+        liveGUIWorkspaceHolder: () -> Bool = { false }
     ) -> MCPResolvedBackend {
-        decide(requested: requested, appIsAvailable: appIsAvailable).resolved
+        decide(
+            requested: requested,
+            appIsAvailable: appIsAvailable,
+            liveGUIWorkspaceHolder: liveGUIWorkspaceHolder
+        ).resolved
     }
 }
 

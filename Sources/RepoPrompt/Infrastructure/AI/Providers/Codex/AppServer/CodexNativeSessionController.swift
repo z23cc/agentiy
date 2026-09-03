@@ -121,6 +121,11 @@ enum CodexTurnInterruptError: Error, LocalizedError, Equatable {
     }
 }
 
+/// Request-failure vocabulary of the Codex session control surface, named without the
+/// transport client so presentation code can carry it without depending on
+/// `CodexAppServerClient`.
+typealias CodexSessionRequestFailure = CodexAppServerClient.RequestFailure
+
 protocol CodexSessionControlling: AnyObject {
     var hasActiveThread: Bool { get }
     var currentSessionReference: CodexNativeSessionController.SessionRef? { get }

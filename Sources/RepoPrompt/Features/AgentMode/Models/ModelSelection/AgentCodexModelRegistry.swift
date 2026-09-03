@@ -1,5 +1,9 @@
 import Foundation
 
+/// Catalog entry for a Codex model advertised by the app server. Presentation code names
+/// the catalog entry, not the transport client that produced it.
+typealias AgentCodexRemoteModel = CodexAppServerClient.RemoteModel
+
 final class AgentCodexModelRegistry {
     static let shared = AgentCodexModelRegistry()
 

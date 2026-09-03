@@ -475,5 +475,76 @@
         "blockedOn": "same user-blocked real-traffic corpus capture named at P6-1/P6-2 -- unchanged, not silently worked around"
       }
     }
+  },
+  "agentSessionHostV1": {
+    "status": "registered at ADR-0011 P2 (contract half), before any host code exists (ADR-0008); design §8 row P0 named these as the P3 gate and deferred registration to P2. Thresholds are the P3 cutover gate -- measured against the Swift `agentry-mcp agent-host` skeleton first, and re-measured unchanged when P7 swaps in the Rust host binary. No candidate measurement exists yet.",
+    "adr": "docs/architecture/adr-0011-agent-session-host.md",
+    "designDoc": "docs/spec/agent-session-host-v1-design.md",
+    "registeredBeforeCandidateExists": true,
+    "mustCompleteBeforeStep": "P3 cutover (HostAgentSessionConnection becomes the GUI production path)",
+    "environment": {
+      "profile": "release",
+      "hostProcess": "agentry-mcp agent-host, one host per user session, Unix socket + agent-host-v1 frames",
+      "clients": "GUI attach/detach and agentry-cli-debug agent_run op: attach, up to 4 concurrent attached clients per session",
+      "sessionShape": "representative 200-turn transcript (~8 MiB of AgentSessionEvent records) plus a live streaming turn; measured on the same aarch64 macOS 14 baseline as the rest of this registry"
+    },
+    "slos": {
+      "attachLatencyP95": {
+        "operation": "attach(sessionID, resumeCursor?) → first frame of AttachResult (complete/partial) or SnapshotEnd (unavailable) delivered to the client",
+        "percentile": 95,
+        "maximumMilliseconds": 250,
+        "conditions": "warm host (session already loaded) with a 200-turn session; cold host (event log replay from the latest snapshot + tail) has a separate informational ceiling of 1500 ms p95",
+        "measurement": "client-side wall time from the encoded Attach frame write to the decoded AttachResult/SnapshotEnd frame; 200 attach/detach cycles after 20 warm-up cycles",
+        "rationale": "GUI relaunch after a crash or Sparkle update must feel like reopening a window, not like loading a session (design §1 goal 1, §7.3)"
+      },
+      "eventFanoutThroughput": {
+        "operation": "host appends one AgentSessionEvent to the log and publishes the EventNotification to every attached client",
+        "minimumEventsPerSecond": 2000,
+        "maximumFanoutLatencyP99Milliseconds": 20,
+        "conditions": "4 attached clients, 200-byte StreamResult events at provider stream rate; clients draining continuously (no backpressure drop)",
+        "measurement": "host-side counter of appended-and-published events per second sustained for 60 s; per-event latency from append return to the last client's frame write completion",
+        "rationale": "streaming a turn to several windows must not lag the provider; a slower client is dropped to resnapshotRequired (design §5.5) rather than slowing the rest"
+      },
+      "eventLogFsyncTurnLatency": {
+        "operation": "per-event write + fdatasync (Durability.Sync) versus deferred append with one fdatasync at the turn boundary (Durability.Deferred + sync)",
+        "maximumAddedTurnLatencyP95Milliseconds": 15,
+        "maximumAddedPerEventLatencyP99Milliseconds": 5,
+        "conditions": "200-event streaming turn on the default APFS volume; both durability modes measured so the host can pick per-event sync for terminal records and deferred sync for stream deltas",
+        "measurement": "turn wall time with logging enabled minus the same turn with an in-memory sink, p95 over 100 turns; per-event append latency p99 in Sync mode",
+        "rationale": "design §7.2 write path allows turn-boundary batched sync only if this measurement shows per-event sync is too costly; the log API exposes both so the choice is data-driven (design §10 risk row 'fsync 拖慢 turn')"
+      },
+      "hostResidentMemory": {
+        "operation": "agentry-mcp agent-host resident set (phys_footprint) while hosting sessions",
+        "maximumIdleMegabytes": 40,
+        "maximumPerActiveSessionMegabytes": 24,
+        "maximumWith8ActiveSessionsMegabytes": 232,
+        "conditions": "idle = zero sessions, one attached client; active = streaming turn with a 200-turn transcript loaded; snapshots streamed from disk (design §5.5), never materialized as whole history in memory",
+        "measurement": "footprint sampled every second for 5 minutes per configuration; report max",
+        "rationale": "the host outlives the GUI and must stay cheap to leave running; per-session cost bounds the single-host topology (design §4.2 P5 decision point)"
+      },
+      "hostCrashRate": {
+        "operation": "unplanned host process exits (crash, panic → runtimePoisoned, watchdog kill) during the P3 beta soak",
+        "maximumCrashesPerWeekPerHost": 0,
+        "escalation": "any week with a non-zero crash count that affected more than one concurrent session triggers the design §4.2 P5 (per-session worker) decision point",
+        "conditions": "P3 beta soak population, all provider variants; a host exit through Shutdown/PrepareUpdate is planned and excluded",
+        "measurement": "Sentry single-channel panic reports plus the lease-holder crash marker left behind when the socket owner dies without a clean shutdown record (design §9 observability)",
+        "rationale": "the crash blast radius is every hosted session (design §10); the budget is zero because the host has no UI code and the provider processes are already outside it"
+      },
+      "hostIdleZeroWake": {
+        "operation": "agentry-mcp agent-host with zero sessions active and zero attached clients, before idle-exit (default 300 s)",
+        "maximumWakeupsPerSecond": 0.1,
+        "maximumIdleCpuPercent": 0.1,
+        "idleExitSeconds": 300,
+        "conditions": "no client connected; provider processes all reaped; ProcessInfo.beginActivity released at idle",
+        "measurement": "`powermetrics --samplers tasks` over 120 s, idle wakeups/s and CPU% for the host pid; same instrument as charter §11.5",
+        "rationale": "charter §11.5 空闲零唤醒: a background host that polls would be a battery regression the GUI never had; timers must be absent, not just quiet (design §4.3 idle exit)"
+      }
+    },
+    "followUpConditions": [
+      "P3 gate: every slo above measured against the Swift host skeleton and recorded here as pass/fail before HostAgentSessionConnection becomes the production path",
+      "eventLogFsyncTurnLatency decides the default Durability for stream deltas (Sync if within budget, otherwise Deferred + turn-boundary sync); the decision is recorded in agent_session_log/README.md",
+      "hostCrashRate escalation to P5 is the design §4.2 decision point; the topology-transparency invariant means no protocol or on-disk change either way",
+      "P7 (Rust host binary) re-measures the same six SLOs with the same instruments; thresholds do not relax"
+    ]
   }
 }

@@ -86,6 +86,11 @@ package struct DomainWorkspaceAuthorityLeaseOwner: Codable, Equatable, Sendable 
     package let leaseEpoch: UUID
     package let acquiredAt: Date
 
+    /// GUI-shaped holders use `DomainRuntimeMode.app`. Headless / host fence-claims use `standalone`.
+    package var isGUIShaped: Bool {
+        mode == DomainRuntimeMode.app.rawValue
+    }
+
     package init(
         identity: DomainRuntimeIdentity,
         profileIdentifier: String,
@@ -115,6 +120,23 @@ package enum DomainWorkspaceAuthorityLeaseStatus: Equatable, Sendable {
     case contended(observedOwner: DomainWorkspaceAuthorityLeaseOwner?)
     case failed(reason: String)
     case released
+}
+
+/// Cross-process peek of the workspace-authority flock. Does not write owner metadata and
+/// does not retain the lock. The kernel flock is the ownership authority.
+package enum DomainWorkspaceAuthorityLeaseObservation: Equatable, Sendable {
+    case unused
+    case held(DomainWorkspaceAuthorityLeaseOwner?)
+    case failed(reason: String)
+
+    package var liveGUIHolder: DomainWorkspaceAuthorityLeaseOwner? {
+        guard case let .held(owner) = self, let owner, owner.isGUIShaped else { return nil }
+        return owner
+    }
+
+    package var hasLiveGUIHolder: Bool {
+        liveGUIHolder != nil
+    }
 }
 
 package enum DomainWorkspaceMutationAccessState: String, Equatable, Sendable {
@@ -329,8 +351,8 @@ package actor DomainWorkspaceAuthorityLease {
         currentStatus
     }
 
-    #if DEBUG
-        package func testSetAfterBlockingAcquisition(
+        #if DEBUG
+            package func testSetAfterBlockingAcquisition(
             _ hook: (@Sendable () async -> Void)?
         ) {
             testAfterBlockingAcquisition = hook
@@ -345,6 +367,23 @@ package actor DomainWorkspaceAuthorityLease {
             await release()
         }
     #endif
+
+    /// Peek the kernel lock without retaining it or rewriting owner metadata.
+    package nonisolated static func observe(
+        scope: DomainWorkspaceAuthorityLeaseScope
+    ) -> DomainWorkspaceAuthorityLeaseObservation {
+        observeBlocking(scope: scope)
+    }
+
+    /// Host / headless fence-claim. Same acquire as mutation access.
+    @discardableResult
+    package func fenceClaim() async -> DomainWorkspaceAuthorityLeaseStatus {
+        await acquire()
+    }
+
+    package func releaseHeld() async {
+        await release()
+    }
 
     /// Attempts one nonblocking acquisition. Contended and recoverable failure states may retry;
     /// an explicitly released lease is terminal and cannot be reacquired.
@@ -523,6 +562,31 @@ package actor DomainWorkspaceAuthorityLease {
         }
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
+    }
+
+    private nonisolated static func observeBlocking(
+        scope: DomainWorkspaceAuthorityLeaseScope
+    ) -> DomainWorkspaceAuthorityLeaseObservation {
+        let descriptor = open(
+            scope.lockFileURL.path,
+            O_RDONLY | O_CLOEXEC
+        )
+        if descriptor < 0 {
+            if errno == ENOENT {
+                return .unused
+            }
+            return .failed(reason: "canonical_storage_lease_observe_open_failed_\(errno)")
+        }
+        defer { close(descriptor) }
+        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+            _ = flock(descriptor, LOCK_UN)
+            return .unused
+        }
+        let code = errno
+        if code == EWOULDBLOCK || code == EAGAIN {
+            return .held(readOwnerMetadata(scope.ownerMetadataURL))
+        }
+        return .failed(reason: "canonical_storage_lease_observe_failed_\(code)")
     }
 
     private nonisolated static func readOwnerMetadata(

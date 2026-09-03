@@ -307,8 +307,12 @@ struct AgentRunMCPToolService {
             return try await executeSteer(args: args)
         case "respond":
             return try await executeRespond(args: args)
+        case "attach":
+            return try await executeAttach(args: args)
+        case "detach":
+            return try await executeDetach(args: args)
         default:
-            throw MCPError.invalidParams("Unsupported agent_run op '\(op)'. Use start, poll, wait, cancel, steer, or respond.")
+            throw MCPError.invalidParams("Unsupported agent_run op '\(op)'. Use start, poll, wait, cancel, steer, respond, attach, or detach.")
         }
     }
 
@@ -779,8 +783,15 @@ struct AgentRunMCPToolService {
         let targetWindow = try requireTargetWindow()
         let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionID = try await resolveControlSessionID(args, targetWindow: targetWindow, agentModeVM: agentModeVM)
-        let timeoutSeconds = try forcePoll ? 0 : Self.resolvedWaitTimeoutSeconds(args["timeout"])
         let metadata = await captureRequestMetadata()
+        _ = try await ensureAttachedControlContext(
+            sessionID: sessionID,
+            targetWindow: targetWindow,
+            agentModeVM: agentModeVM,
+            metadata: metadata,
+            requireHostAttach: false
+        )
+        let timeoutSeconds = try forcePoll ? 0 : Self.resolvedWaitTimeoutSeconds(args["timeout"])
         let initialSnapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
         if initialSnapshot.isActionableForMCPWait || timeoutSeconds <= 0 {
             return decoratedRunValue(snapshot: initialSnapshot)
@@ -801,6 +812,16 @@ struct AgentRunMCPToolService {
         let targetWindow = try requireTargetWindow()
         let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionIDs = try await resolveControlSessionIDs(references, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        let attachMetadata = await captureRequestMetadata()
+        for sessionID in sessionIDs {
+            _ = try await ensureAttachedControlContext(
+                sessionID: sessionID,
+                targetWindow: targetWindow,
+                agentModeVM: agentModeVM,
+                metadata: attachMetadata,
+                requireHostAttach: false
+            )
+        }
 
         // Single-element waits should preserve the existing single-session response shape.
         if sessionIDs.count == 1 {
@@ -892,16 +913,33 @@ struct AgentRunMCPToolService {
     private func executePollMany(args: [String: Value]) async throws -> Value {
         let references = try parseSessionIDArray(args)
         let targetWindow = try requireTargetWindow()
-        let agentModeVM = targetWindow.agentModeViewModel
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionIDs = try await resolveControlSessionIDs(references, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        let metadata = await captureRequestMetadata()
+        for sessionID in sessionIDs {
+            _ = try await ensureAttachedControlContext(
+                sessionID: sessionID,
+                targetWindow: targetWindow,
+                agentModeVM: agentModeVM,
+                metadata: metadata,
+                requireHostAttach: false
+            )
+        }
         let snapshots = await collectCurrentSnapshots(sessionIDs: sessionIDs, agentModeVM: agentModeVM)
         return decoratedMultiPollValue(sessionIDs: sessionIDs, snapshots: snapshots)
     }
 
     private func executeCancel(args: [String: Value]) async throws -> Value {
         let targetWindow = try requireTargetWindow()
-        let agentModeVM = targetWindow.agentModeViewModel
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionID = try await resolveControlSessionID(args, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        _ = try await ensureAttachedControlContext(
+            sessionID: sessionID,
+            targetWindow: targetWindow,
+            agentModeVM: agentModeVM,
+            metadata: captureRequestMetadata(),
+            requireHostAttach: false
+        )
         let initialSnapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
         if initialSnapshot.status == .expired {
             throw MCPError.invalidParams(agentRunExpiredHandleRecoveryNote)
@@ -916,7 +954,6 @@ struct AgentRunMCPToolService {
         }
         let metadata = await captureRequestMetadata()
         let cancelsStartupPendingRun = !session.runState.isActive && session.mcpFollowUpRunPending
-        let tabID = session.tabID
         let cancelResult = try await withHeartbeat(
             metadata.connectionID,
             toolName,
@@ -926,7 +963,13 @@ struct AgentRunMCPToolService {
             if cancelsStartupPendingRun {
                 await agentModeVM.setMCPFollowUpRunPending(sessionID: sessionID, false)
             }
-            await agentModeVM.cancelAgentRun(tabID: tabID, completion: .terminalPublished)
+            // Second client of the same seam the GUI uses (design §6). Attach
+            // replaced the uncontrolled-run fence; interrupt the host-owned run.
+            _ = try? await agentModeVM.sessionConnection.interrupt(
+                sessionID: sessionID,
+                reason: .userRequested,
+                operationID: UUID()
+            )
             await Task.yield()
             return await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM).toValue()
         }
@@ -943,11 +986,12 @@ struct AgentRunMCPToolService {
         let text = try resolveMessage(args["message"], name: "message")
         let workflow = try resolveWorkflow(args: args)
         let metadata = await captureRequestMetadata()
-        let resolution = try await ensureSteerControlContext(
+        let resolution = try await ensureAttachedControlContext(
             sessionID: sessionID,
             targetWindow: targetWindow,
             agentModeVM: agentModeVM,
-            metadata: metadata
+            metadata: metadata,
+            requireHostAttach: false
         )
         let delivery: AgentModeViewModel.MCPInstructionDispatch
         let snapshot: AgentRunMCPSnapshot
@@ -1068,12 +1112,50 @@ struct AgentRunMCPToolService {
         }
     }
 
-    private func ensureSteerControlContext(
+    private func executeAttach(args: [String: Value]) async throws -> Value {
+        let targetWindow = try requireTargetWindow()
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
+        let sessionID = try await resolveControlSessionID(args, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        let resume = try parseResumeCursor(args)
+        let metadata = await captureRequestMetadata()
+        let result = try await agentModeVM.attachHostSession(sessionID: sessionID, resume: resume)
+        _ = try await ensureAttachedControlContext(
+            sessionID: sessionID,
+            targetWindow: targetWindow,
+            agentModeVM: agentModeVM,
+            metadata: metadata,
+            requireHostAttach: false
+        )
+        let snapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
+        return decoratedAttachValue(snapshot: snapshot, attach: result, attached: true)
+    }
+
+    private func executeDetach(args: [String: Value]) async throws -> Value {
+        let targetWindow = try requireTargetWindow()
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
+        let sessionID = try await resolveControlSessionID(args, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        await agentModeVM.detachHostSession(sessionID: sessionID)
+        await agentModeVM.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
+        let snapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
+        return decoratedAttachValue(snapshot: snapshot, attach: nil, attached: false)
+    }
+
+    /// P4: attach this MCP handle as a second client of a host session. Explicit
+    /// `op: attach` requires the host; wait/steer/respond auto-attach is best-effort
+    /// so a local session still works when the host is unavailable.
+    @discardableResult
+    private func ensureAttachedControlContext(
         sessionID: UUID,
         targetWindow: WindowState,
         agentModeVM: AgentModeViewModel,
-        metadata: RequestMetadata
+        metadata: RequestMetadata,
+        requireHostAttach: Bool
     ) async throws -> SteerControlResolution {
+        if requireHostAttach {
+            _ = try await agentModeVM.attachHostSession(sessionID: sessionID)
+        } else {
+            _ = await agentModeVM.attachHostSessionIfAvailable(sessionID: sessionID)
+        }
         if let controlledSession = agentModeVM.mcpControlledSession(sessionID: sessionID) {
             return SteerControlResolution(
                 session: controlledSession,
@@ -1081,14 +1163,18 @@ struct AgentRunMCPToolService {
                 reactivatedControlIdentity: nil
             )
         }
-        guard let workspace = targetWindow.workspaceManager.activeWorkspace else {
-            throw MCPError.invalidParams("No active workspace available to resolve session_id '\(sessionID.uuidString)'.")
-        }
-        guard let resolvedSessionID = try await agentModeVM.mcpResolveSessionID(
-            reference: sessionID.uuidString,
-            workspace: workspace
-        ), resolvedSessionID == sessionID else {
-            throw MCPError.invalidParams("Session '\(sessionID.uuidString)' was not found in the active workspace.")
+
+        let hasLocalSession = ((try? agentModeVM.authoritativeLiveSession(for: sessionID)) ?? nil) != nil
+        if !hasLocalSession {
+            guard let workspace = targetWindow.workspaceManager.activeWorkspace else {
+                throw MCPError.invalidParams("No active workspace available to resolve session_id '\(sessionID.uuidString)'.")
+            }
+            guard let resolvedSessionID = try await agentModeVM.mcpResolveSessionID(
+                reference: sessionID.uuidString,
+                workspace: workspace
+            ), resolvedSessionID == sessionID else {
+                throw MCPError.invalidParams("Session '\(sessionID.uuidString)' was not found in the active workspace.")
+            }
         }
 
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
@@ -1103,21 +1189,15 @@ struct AgentRunMCPToolService {
             await agentModeVM.mcpDiscardSessionTarget(target)
             throw MCPError.invalidParams("The requested agent session is not currently available.")
         }
-        guard !session.runState.isActive else {
-            await agentModeVM.mcpDiscardSessionTarget(target)
-            throw MCPError.invalidParams(
-                "The requested agent run is active but is not controlled by this MCP handle."
-            )
-        }
 
         do {
             try await agentModeVM.mcpActivateControlContext(
                 forTabID: target.tabID,
                 sessionID: sessionID,
                 originatingConnectionID: metadata.connectionID,
-                startPending: true,
+                startPending: false,
                 markSessionAsMCPOriginated: false,
-                requireInactiveRunState: true
+                requireInactiveRunState: false
             )
         } catch {
             await agentModeVM.mcpDiscardSessionTarget(target)
@@ -1129,7 +1209,7 @@ struct AgentRunMCPToolService {
         else {
             await agentModeVM.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
             await agentModeVM.mcpDiscardSessionTarget(target)
-            throw MCPError.internalError("Failed to reactivate MCP control for the requested agent session.")
+            throw MCPError.internalError("Failed to activate MCP control for the requested agent session.")
         }
         let identity = SteerControlIdentity(
             sessionID: context.sessionID,
@@ -1164,8 +1244,15 @@ struct AgentRunMCPToolService {
 
     private func executeRespond(args: [String: Value]) async throws -> Value {
         let targetWindow = try requireTargetWindow()
-        let agentModeVM = targetWindow.agentModeViewModel
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionID = try await resolveControlSessionID(args, targetWindow: targetWindow, agentModeVM: agentModeVM)
+        _ = try await ensureAttachedControlContext(
+            sessionID: sessionID,
+            targetWindow: targetWindow,
+            agentModeVM: agentModeVM,
+            metadata: captureRequestMetadata(),
+            requireHostAttach: false
+        )
         let interactionID = try requireUUID(args["interaction_id"], name: "interaction_id")
         let workflow = try resolveWorkflow(args: args)
         let payload = try parseResponsePayload(args: args)
@@ -2074,6 +2161,67 @@ struct AgentRunMCPToolService {
             object["wait"] = .object(wait)
         }
         return .object(object)
+    }
+
+    private func decoratedAttachValue(
+        snapshot: AgentRunMCPSnapshot,
+        attach: AgentSessionAttachResult?,
+        attached: Bool
+    ) -> Value {
+        var object = snapshot.asObject()
+        object["attached"] = .bool(attached)
+        if let attach {
+            object["replay"] = .string(attach.replay.rawValue)
+            object["delivery_cursor"] = .int(Int(clamping: attach.cursor.deliveryCursor))
+            object["generation"] = .string(Self.hexString(attach.cursor.generation))
+        }
+        return .object(object)
+    }
+
+    private func parseResumeCursor(_ args: [String: Value]) throws -> AgentSessionCursor? {
+        let cursorValue = args["resume_cursor"]
+        let generationRaw = normalizedString(args["resume_generation"])
+        if cursorValue == nil, generationRaw == nil {
+            return nil
+        }
+        guard let cursorValue else {
+            throw MCPError.invalidParams("resume_generation requires resume_cursor.")
+        }
+        let delivery: UInt64
+        if let int = cursorValue.intValue, int >= 0 {
+            delivery = UInt64(int)
+        } else {
+            throw MCPError.invalidParams("resume_cursor must be a non-negative integer.")
+        }
+        let generation: Data
+        if let generationRaw {
+            guard let parsed = Self.parseHexData(generationRaw) else {
+                throw MCPError.invalidParams("resume_generation must be a hex string.")
+            }
+            generation = parsed
+        } else {
+            generation = Data()
+        }
+        return AgentSessionCursor(generation: generation, deliveryCursor: delivery)
+    }
+
+    private static func hexString(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func parseHexData(_ raw: String) -> Data? {
+        let hex = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hex.count.isMultiple(of: 2), !hex.isEmpty else { return nil }
+        var data = Data()
+        data.reserveCapacity(hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index ..< next], radix: 16) else { return nil }
+            data.append(byte)
+            index = next
+        }
+        return data
     }
 
     private nonisolated func decoratedMultiWaitValue(

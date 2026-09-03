@@ -182,7 +182,7 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
         XCTAssertFalse(hasActiveRegistration)
     }
 
-    func testSteerActiveUncontrolledSessionIsRejected() async throws {
+    func testSteerActiveUncontrolledSessionAttachesAndDispatches() async throws {
         let window = try await makeWindow()
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
 
@@ -194,26 +194,23 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
         session.runState = .running
 
         var service = makeService(window: window)
+        var dispatched = false
         service.testDispatchSteerInstruction = { _, _, _, _ in
-            XCTFail("Active uncontrolled sessions must be rejected before dispatch")
+            dispatched = true
             return .startedRun
         }
 
-        do {
-            _ = try await service.execute(args: [
-                "op": .string("steer"),
-                "session_id": .string(sessionID.uuidString),
-                "message": .string("active uncontrolled session")
-            ])
-            XCTFail("Expected active uncontrolled session rejection")
-        } catch {
-            XCTAssertTrue(String(describing: error).contains("active but is not controlled"), String(describing: error))
-        }
+        _ = try await service.execute(args: [
+            "op": .string("steer"),
+            "session_id": .string(sessionID.uuidString),
+            "message": .string("active uncontrolled session")
+        ])
 
-        XCTAssertNil(session.mcpControlContext)
+        XCTAssertTrue(dispatched, "P4 attach replaces the uncontrolled-run fence")
+        XCTAssertNotNil(session.mcpControlContext)
         XCTAssertFalse(session.isMCPOriginated)
         let hasActiveRegistration = await AgentRunSessionStore.hasActiveRegistration(sessionID: sessionID)
-        XCTAssertFalse(hasActiveRegistration)
+        XCTAssertTrue(hasActiveRegistration)
     }
 
     private func makeWindow() async throws -> WindowState {

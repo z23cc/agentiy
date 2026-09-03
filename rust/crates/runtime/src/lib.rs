@@ -11,6 +11,9 @@
 
 pub mod agent_claude;
 pub mod agent_provider;
+pub mod agent_provider_semantics;
+pub mod agent_run_lifecycle;
+pub mod agent_session_transcript;
 pub mod agent_watcher;
 pub mod apply_edits;
 pub mod codemap;

@@ -88,6 +88,10 @@ CARGO_FUZZ_TARGETS = {
     # P6-6 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6): fail-closed decode of the
     # agent-command-v1 versioned batched event envelope (rust/fuzz/fuzz_targets/agent_command_v1.rs).
     "agent_command_v1",
+    # ADR-0011 P2 (docs/spec/agent-session-host-v1-design.md §5.2, §7.2): agent-host-v1 wire frame
+    # decode and agent session log header/record decode.
+    "agent_host_frame_v1",
+    "agent_session_log_frame_v1",
 }
 CARGO_FUZZ_TOOLCHAIN = "nightly-2026-08-15"
 CARGO_TARGET = "aarch64-apple-darwin"
@@ -100,6 +104,8 @@ CARGO_TARGET = "aarch64-apple-darwin"
 XTASK_PROFILE_ARGS = ("--release",)
 CARGO_PACKAGE_NAMES = {
     "proto": "agentry-proto",
+    # ADR-0011 P2: the Agent Session Host event log (rust/crates/agent_session_log).
+    "session-log": "agentry-agent-session-log",
     "runtime": "agentry-runtime",
     "ffi": "agentry-ffi",
 }
@@ -265,12 +271,12 @@ Operation commands:
   ./conductor m7-backend-certification # validate M7 backend cutover and release evidence
   ./conductor m8-live-certification [--live] # run M8 live certification and write a redacted receipt
   ./conductor cargo-build [--profile debug|release]
-  ./conductor cargo-test [--package proto|runtime|ffi|all]
+  ./conductor cargo-test [--package proto|session-log|runtime|ffi|all]
   ./conductor cargo-codegen [--check]
   ./conductor cargo-archive [--profile debug|release]
   ./conductor cargo-deny
   ./conductor cargo-audit
-  ./conductor cargo-fuzz [--target envelope_decode|inventory_scope_bulk_chunk|inventory_scope_delta_event|claude_ndjson_v1|agent_command_v1] [--seconds 1..300]
+  ./conductor cargo-fuzz [--target envelope_decode|inventory_scope_bulk_chunk|inventory_scope_delta_event|claude_ndjson_v1|agent_command_v1|agent_host_frame_v1|agent_session_log_frame_v1] [--seconds 1..300]
   ./conductor xcode-rust-link-validate
   ./conductor rust-ffi-swift-baseline-export    # release test binary; never launches the app
   ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports
@@ -3362,7 +3368,11 @@ class OperationRegistry:
             if operation in {"cargo-build", "cargo-archive"} and profile not in {"debug", "release"}:
                 raise ConductorError("cargo profile must be debug or release")
             if operation == "cargo-test" and package not in {*CARGO_PACKAGE_NAMES, "all"}:
-                raise ConductorError("cargo package must be proto, runtime, ffi, or all")
+                raise ConductorError(
+                    "cargo package must be one of: "
+                    + ", ".join(sorted(CARGO_PACKAGE_NAMES))
+                    + ", or all"
+                )
             if operation == "cargo-codegen" and set(args) - {"check"}:
                 raise ConductorError("cargo-codegen accepts only the check flag")
             if operation in {"cargo-deny", "cargo-audit"} and args:
@@ -8796,7 +8806,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         args["profile"] = ns.profile
     elif operation == "cargo-test":
         parser = argparse.ArgumentParser(prog="conductor cargo-test")
-        parser.add_argument("--package", choices=["proto", "runtime", "ffi", "all"], default="all")
+        parser.add_argument(
+            "--package", choices=[*sorted(CARGO_PACKAGE_NAMES), "all"], default="all"
+        )
         ns = parser.parse_args(rest)
         args["package"] = ns.package
     elif operation == "cargo-codegen":

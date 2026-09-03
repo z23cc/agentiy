@@ -11,4 +11,5 @@ python3 ./Scripts/rust_ffi_guardrails.py
 ./Scripts/swiftpm_notice_guardrails.sh
 ./Scripts/codex_vendor_guardrails.sh
 ./Scripts/headless_runtime_guardrails.sh
+./Scripts/agent_session_boundary_guardrails.sh
 python3 ./Scripts/validate_rust_agent_provider_p7_4.py --check

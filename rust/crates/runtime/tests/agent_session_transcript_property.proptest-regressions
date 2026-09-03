@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9a3b6beac841432d6f1ff8fb544e0b53711b24f9a97b25e83b28769c6dc69daa # shrinks to actions = [Terminate { kind: 2 }, Interaction { id: 0, settle: false }]

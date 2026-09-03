@@ -85,3 +85,172 @@ CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudeP
 # change does not touch. See abi-v1.json's agentClaudeV1.abiEpochDecision for the recorded decision.
 CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?, AgentClaudeFlagSettingsDispositionV1) throws -> AgentClaudeFlagSettingsReceiptV1
 CoreRuntime.agentShutdown(RuntimeIdentity, string) throws
+
+# ADR-0011 P2: agent-host-v1 codec and agent session log FFI surface
+# (docs/architecture/adr-0011-agent-session-host.md decision 4(a); docs/spec/agent-session-host-v1-design.md
+# §5.2, §7.2, §11 rows 3-4). ABI epoch unchanged at 1: additive-only, two new objects, no existing
+# export's signature changed -- same precedent as inventoryScopeV1/agentClaudeV1 above. Neither object
+# takes RuntimeIdentity: the codec is a pure function of bytes and the log is a file handle; build
+# identity for the host protocol is checked by the handshake itself (Hello/Welcome.buildFingerprint).
+# `bytes` here is always a complete agent-host-v1 wire frame, a snapshot body, or the 4-byte length
+# prefix -- the project-owned wire format (charter §14.2), never a provider protocol line (INV-P6-1
+# untouched). Every other parameter and result is a typed AgentHost*V1 / AgentSessionLog*V1 record or
+# enum, so Swift never parses protobuf or log bytes.
+AgentHostProtocolV1.new() -> AgentHostProtocolV1
+AgentHostProtocolV1.limits() throws -> AgentHostProtocolLimitsV1
+AgentHostProtocolV1.sessionLogFileNames(string) throws -> AgentSessionLogFileNamesV1
+AgentHostProtocolV1.framePayloadLength(bytes) throws -> u32
+AgentHostProtocolV1.encodeClientMessage(AgentHostClientMessageV1) throws -> bytes
+AgentHostProtocolV1.decodeClientMessage(bytes) throws -> AgentHostClientMessageV1
+AgentHostProtocolV1.encodeHostMessage(AgentHostHostMessageV1) throws -> bytes
+AgentHostProtocolV1.decodeHostMessage(bytes) throws -> AgentHostHostMessageV1
+AgentHostProtocolV1.encodeSnapshot(AgentHostAgentSessionSnapshotV1) throws -> bytes
+AgentHostProtocolV1.decodeSnapshot(bytes) throws -> AgentHostAgentSessionSnapshotV1
+AgentHostProtocolV1.commandFingerprint(AgentHostCommandRequestV1) throws -> string
+AgentHostProtocolV1.mutationKey(AgentHostCommandRequestV1) throws -> AgentHostMutationKeyV1?
+# Single writer per file (the host); `open` truncates a torn tail and reports it, fails closed on a
+# newer header schema, and never repairs the log from the snapshot. `append` durability is explicit
+# so turn-boundary batched fsync can be measured against the registered SLO.
+AgentSessionLog.open(string, string, AgentSessionLogOpenOptionsV1) throws -> AgentSessionLog
+AgentSessionLog.openReport() throws -> AgentSessionLogOpenReportV1
+AgentSessionLog.status() throws -> AgentSessionLogStatusV1
+AgentSessionLog.append(AgentHostAgentSessionEventV1, AgentSessionLogDurabilityV1) throws -> u64
+AgentSessionLog.sync() throws
+AgentSessionLog.readFrom(u64, u32, u32) throws -> AgentSessionLogReadBatchV1
+AgentSessionLog.compact(AgentHostAgentSessionSnapshotV1) throws -> AgentSessionLogCompactReceiptV1
+AgentSessionLog.loadSnapshot() throws -> AgentSessionLogSnapshotLoadV1
+AgentSessionLog.close() throws
+
+# ADR-0011 P6-a (B track): Agent Mode run-lifecycle reducers ported to Rust
+# (docs/architecture/adr-0011-agent-session-host.md decision 4(b)/11; docs/spec/agent-session-host-v1-design.md
+# §4.1.1, §7.1, §8 "P6-a", §11 row 6). ABI epoch unchanged at 1: additive-only, five new objects, one new
+# error variant (agentRunLifecycleInvalidRequest), no existing export's signature changed -- same precedent as
+# agentSessionHostV1 above. No object takes RuntimeIdentity: each is a pure value-state reducer the host embeds
+# (no clock, no identity minting, no I/O), so there is no runtime authority to fence. Every `string` parameter
+# named *Id/*Generation/token is RFC 4122 UUID text (either case; rendered lowercase); enum mirrors have no
+# Unspecified member because the Swift originals have none. `canonicalState()` is the fixed-format JSON used by
+# the Swift <-> Rust differential harness (Tests/RepoPromptDomainRuntimeTests/DomainAgentRunRustDifferentialTests.swift).
+AgentRunLifecycleTrackerV1.new() -> AgentRunLifecycleTrackerV1
+AgentRunLifecycleTrackerV1.reset() throws
+AgentRunLifecycleTrackerV1.begin(AgentRunBeginAttemptV1) throws -> AgentRunOwnershipV1
+AgentRunLifecycleTrackerV1.record(AgentRunOwnershipV1, AgentRunLivenessSignalKindV1, AgentRunLifecycleStageV1, AgentRunRetryIntentV1, u64) throws -> AgentRunProgressAcceptanceV1
+AgentRunLifecycleTrackerV1.accept(AgentRunProgressSignalV1) throws -> AgentRunProgressAcceptanceV1
+AgentRunLifecycleTrackerV1.end(AgentRunOwnershipV1?) throws -> bool
+AgentRunLifecycleTrackerV1.installProcessRunId(string) throws
+AgentRunLifecycleTrackerV1.clearProcessRunIdIfCurrent(string) throws -> bool
+AgentRunLifecycleTrackerV1.forceClearProcessRunId() throws
+AgentRunLifecycleTrackerV1.bumpTerminalDrainGeneration() throws
+AgentRunLifecycleTrackerV1.beginTerminalCommit() throws -> AgentRunTerminalCommitBeginResultV1
+AgentRunLifecycleTrackerV1.stageTerminalCommit(string, AgentRunOwnershipV1) throws -> bool
+AgentRunLifecycleTrackerV1.recordTerminalPublicationResult(AgentRunTerminalPublicationResultV1) throws
+AgentRunLifecycleTrackerV1.abortTerminalCommit() throws
+AgentRunLifecycleTrackerV1.completeTerminalCommit() throws
+AgentRunLifecycleTrackerV1.invalidateTerminalCommit() throws
+AgentRunLifecycleTrackerV1.hasTerminalCommit(AgentRunOwnershipV1) throws -> bool
+AgentRunLifecycleTrackerV1.state() throws -> AgentRunLifecycleTrackerSnapshotV1
+AgentRunLifecycleTrackerV1.canonicalState() throws -> string
+AgentRunProcessIdentityStateV1.new(string?, u64) throws -> AgentRunProcessIdentityStateV1
+AgentRunProcessIdentityStateV1.install(string) throws
+AgentRunProcessIdentityStateV1.clearIfCurrent(string) throws -> bool
+AgentRunProcessIdentityStateV1.forceClear() throws
+AgentRunProcessIdentityStateV1.bumpTerminalDrainGeneration() throws
+AgentRunProcessIdentityStateV1.resetForNewAttempt() throws
+AgentRunProcessIdentityStateV1.state() throws -> AgentRunProcessIdentitySnapshotV1
+AgentRunProcessIdentityStateV1.canonicalState() throws -> string
+AgentRunTerminalCommitStateV1.new() -> AgentRunTerminalCommitStateV1
+AgentRunTerminalCommitStateV1.begin(AgentRunOwnershipV1?) throws -> AgentRunTerminalCommitBeginResultV1
+AgentRunTerminalCommitStateV1.stage(string, AgentRunOwnershipV1) throws -> bool
+AgentRunTerminalCommitStateV1.record(AgentRunTerminalPublicationResultV1) throws
+AgentRunTerminalCommitStateV1.abort() throws
+AgentRunTerminalCommitStateV1.complete() throws
+AgentRunTerminalCommitStateV1.invalidate() throws
+AgentRunTerminalCommitStateV1.reset() throws
+AgentRunTerminalCommitStateV1.matches(AgentRunOwnershipV1) throws -> bool
+AgentRunTerminalCommitStateV1.state() throws -> AgentRunTerminalCommitSnapshotV1
+AgentRunTerminalCommitStateV1.canonicalState() throws -> string
+AgentRunTerminalSettlementCoordinatorV1.new() -> AgentRunTerminalSettlementCoordinatorV1
+AgentRunTerminalSettlementCoordinatorV1.hasConsumedProviderSuccessor(string) throws -> bool
+AgentRunTerminalSettlementCoordinatorV1.recordProviderSuccessorConsumption(string, bool) throws -> bool
+AgentRunTerminalSettlementCoordinatorV1.registerTeardown(AgentRunOwnershipV1, string) throws -> AgentRunTeardownRegistrationResultV1
+AgentRunTerminalSettlementCoordinatorV1.hasPendingTeardown(AgentRunOwnershipV1) throws -> bool
+AgentRunTerminalSettlementCoordinatorV1.teardownToken(AgentRunOwnershipV1) throws -> string?
+AgentRunTerminalSettlementCoordinatorV1.completeTeardown(AgentRunOwnershipV1, string) throws -> bool
+AgentRunTerminalSettlementCoordinatorV1.reset() throws
+AgentRunTerminalSettlementCoordinatorV1.state() throws -> AgentRunTerminalSettlementSnapshotV1
+AgentRunTerminalSettlementCoordinatorV1.canonicalState() throws -> string
+AgentRunSemanticAuthorityV1.new() -> AgentRunSemanticAuthorityV1
+AgentRunSemanticAuthorityV1.resolve(AgentRunTerminationSignalV1) throws -> AgentRunSemanticResolutionV1
+AgentRunSemanticAuthorityV1.outcome(AgentRunTerminationSignalV1) throws -> AgentRunTerminalOutcomeV1?
+AgentRunSemanticAuthorityV1.isTerminal(AgentRunTerminationSignalV1) throws -> bool
+AgentRunSemanticAuthorityV1.classifyExecution(AgentRunExecutionOperationEndingV1, AgentRunFailureReasonV1, bool) throws -> AgentRunExecutionReportV1
+AgentRunSemanticAuthorityV1.classifyProviderExecution(AgentRunProviderOperationEndingV1) throws -> AgentRunExecutionReportV1
+
+# ADR-0011 P6-b (B track): Agent Session Host transcript / snapshot reducer
+# (docs/architecture/adr-0011-agent-session-host.md decision 4(b)/11; docs/spec/agent-session-host-v1-design.md
+# §4.1.1, §7.1, §8 "P6-b"). ABI epoch unchanged at 1: additive-only, one new object, no new error
+# variant, no existing export's signature changed. No RuntimeIdentity: the reducer is a pure
+# value-state fold the host embeds (no clock, no identity minting, no I/O). The host still appends
+# through AgentSessionLog. `canonicalState()` is the fixed-format JSON used by the Swift <-> Rust
+# differential harness (Tests/RepoPromptDomainRuntimeTests/AgentSessionTranscriptRustDifferentialTests.swift).
+AgentSessionTranscriptReducerV1.placeholder(string) -> AgentSessionTranscriptReducerV1
+AgentSessionTranscriptReducerV1.fromSummary(AgentHostSessionSummaryV1) throws -> AgentSessionTranscriptReducerV1
+AgentSessionTranscriptReducerV1.fromSnapshot(AgentHostAgentSessionSnapshotV1) throws -> AgentSessionTranscriptReducerV1
+AgentSessionTranscriptReducerV1.reset() throws
+AgentSessionTranscriptReducerV1.apply(AgentHostAgentSessionEventV1, u64) throws
+AgentSessionTranscriptReducerV1.setGeneration(bytes) throws
+AgentSessionTranscriptReducerV1.setAttachedClientCount(u32) throws
+AgentSessionTranscriptReducerV1.snapshot(bytes, string) throws -> AgentHostAgentSessionSnapshotV1
+AgentSessionTranscriptReducerV1.summary() throws -> AgentHostSessionSummaryV1
+AgentSessionTranscriptReducerV1.hostOwnedSummary(AgentHostSessionStatusV1, string, bool, string) throws -> AgentHostSessionSummaryV1
+AgentSessionTranscriptReducerV1.lastCursor() throws -> u64
+AgentSessionTranscriptReducerV1.hasMetadata() throws -> bool
+AgentSessionTranscriptReducerV1.isTerminal() throws -> bool
+AgentSessionTranscriptReducerV1.hasLiveRun() throws -> bool
+AgentSessionTranscriptReducerV1.transcript() throws -> sequence<AgentHostTranscriptEntryV1>
+AgentSessionTranscriptReducerV1.pendingInteractions() throws -> sequence<AgentHostPendingInteractionV1>
+AgentSessionTranscriptReducerV1.unsettledOperations() throws -> sequence<AgentHostCommandAcceptedV1>
+AgentSessionTranscriptReducerV1.canonicalState() throws -> string
+
+# ADR-0011 P6-c (B track): Codex/ACP protocol semantics + MCP permission-policy evaluator
+# (docs/architecture/adr-0011-agent-session-host.md decision 4(b)/(c); docs/spec/agent-session-host-v1-design.md
+# §4.1.1, §5.6, §8 "P6-c"). ABI epoch unchanged at 1: additive-only, three new objects, no new
+# error variant, no existing export's signature changed. No RuntimeIdentity: pure functions and
+# value-state reducers the host embeds. JSON params are already-parsed transport payloads, not
+# untrusted wire frames (property-test-only; no new fuzz target).
+AgentPermissionPolicyEvaluatorV1.new() -> AgentPermissionPolicyEvaluatorV1
+AgentPermissionPolicyEvaluatorV1.evaluate(AgentHostPermissionPolicyV1, AgentPermissionEvalRequestV1) throws -> AgentPermissionEvalResultV1
+AgentPermissionPolicyEvaluatorV1.matchRepoPromptAutoApproval(string?, string) throws -> AgentRepoPromptAutoApprovalMatchV1?
+AgentProviderAcpSemanticsV1.new() -> AgentProviderAcpSemanticsV1
+AgentProviderAcpSemanticsV1.reset() throws
+AgentProviderAcpSemanticsV1.normalizeSessionUpdate(string, AgentProviderAcpProviderIdV1, string, string, string, AgentProviderOpenCodeToolProfileV1) throws -> sequence<AgentHostRuntimeEventV1>
+AgentProviderAcpSemanticsV1.applyStopReason(string?, string, string) throws -> AgentHostRuntimeEventV1
+AgentProviderAcpSemanticsV1.isAutoSelectable(string?, AgentProviderAcpProviderIdV1) throws -> bool
+AgentProviderAcpSemanticsV1.mapApprovalDecision(AgentHostApprovalDecisionKindV1, sequence<AgentProviderAcpPermissionOptionV1>, AgentProviderAcpProviderIdV1) throws -> AgentProviderAcpDecisionMappingV1
+AgentProviderAcpSemanticsV1.autoApprovalOptionId(string?, string, sequence<AgentProviderAcpPermissionOptionV1>, AgentProviderAcpProviderIdV1) throws -> string?
+AgentProviderAcpSemanticsV1.approvalKindForToolKind(string?) throws -> AgentHostApprovalKindV1
+AgentProviderAcpSemanticsV1.settleApproval(string) throws -> bool
+AgentProviderAcpSemanticsV1.isTerminal() throws -> bool
+AgentProviderAcpSemanticsV1.canonicalState() throws -> string
+AgentProviderCodexSemanticsV1.new() -> AgentProviderCodexSemanticsV1
+AgentProviderCodexSemanticsV1.reset() throws
+AgentProviderCodexSemanticsV1.applyNotification(string, string, string, string?) throws -> sequence<AgentHostRuntimeEventV1>
+AgentProviderCodexSemanticsV1.classifyServerRequest(string) throws -> AgentProviderCodexServerRequestKindV1?
+AgentProviderCodexSemanticsV1.parseApprovalRequest(string, string, string, string?, string?) throws -> AgentHostApprovalRequestV1?
+AgentProviderCodexSemanticsV1.mapTurnStatus(string) throws -> string
+AgentProviderCodexSemanticsV1.collapseModelOptions(sequence<AgentProviderCodexModelOptionV1>) throws -> sequence<AgentProviderCodexModelOptionV1>
+AgentProviderCodexSemanticsV1.negotiateSelection(string, string?, string?, sequence<AgentProviderCodexReasoningEffortV1>, AgentProviderCodexReasoningEffortV1?, bool) throws -> AgentProviderCodexSelectionV1
+AgentProviderCodexSemanticsV1.buildApprovalResult(AgentHostApprovalDecisionKindV1, AgentHostApprovalKindV1, string?) throws -> string
+AgentProviderCodexSemanticsV1.buildPermissionsResult(AgentHostApprovalDecisionKindV1, string) throws -> string
+AgentProviderCodexSemanticsV1.settleApproval(string) throws -> bool
+AgentProviderCodexSemanticsV1.isTerminal() throws -> bool
+AgentProviderCodexSemanticsV1.canonicalState() throws -> string
+AgentProviderCodexLifecycleV1.new() -> AgentProviderCodexLifecycleV1
+AgentProviderCodexLifecycleV1.reset() throws
+AgentProviderCodexLifecycleV1.applyFileChange(string, string) throws -> AgentProviderCodexLifecycleEventV1?
+AgentProviderCodexLifecycleV1.applyFileChangeLifecycle(string, string) throws -> AgentProviderCodexLifecycleEventV1?
+AgentProviderCodexLifecycleV1.applyFileChangeOutputDelta(string) throws -> AgentProviderCodexLifecycleEventV1?
+AgentProviderCodexLifecycleV1.applyCommandExecutionRunningUpdate(AgentProviderCodexRunningUpdateV1, sequence<AgentProviderCodexBashItemV1>) throws -> AgentProviderCodexRunningApplyV1
+AgentProviderCodexLifecycleV1.parseCommandExecutionRunningUpdate(string, string) throws -> AgentProviderCodexRunningUpdateV1?
+AgentProviderCodexLifecycleV1.sanitizeCommandOutput(string) throws -> string
+AgentProviderCodexLifecycleV1.withCommandExecutionRunningStatus(string?, string?, string?) throws -> string
+AgentProviderCodexLifecycleV1.canonicalState() throws -> string

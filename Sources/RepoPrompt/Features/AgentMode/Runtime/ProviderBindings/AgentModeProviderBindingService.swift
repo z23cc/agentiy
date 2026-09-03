@@ -194,7 +194,7 @@ final class AgentModeProviderBindingService {
                 let runtime = runtimePermission(for: session.selectedAgent, profile: session.permissionProfile)
                 guard let sessionModeID = runtime.acpSessionModeID,
                       session.runState.isActive,
-                      let controller = session.acpController else { continue }
+                      let controller = session.inProcessExecution.acpController else { continue }
                 Task { @MainActor in
                     let providerName = session.selectedAgent.displayName
                     if AgentRuntimeProviderService.enableDebugLogging { print("[ACP-Runner] tab=\(session.tabID) applying \(providerName) session mode=\(sessionModeID)") }
@@ -213,7 +213,7 @@ final class AgentModeProviderBindingService {
                 }
             case .cursor:
                 let runtime = runtimePermission(for: session.selectedAgent, profile: session.permissionProfile)
-                guard session.runState.isActive, let controller = session.acpController else { continue }
+                guard session.runState.isActive, let controller = session.inProcessExecution.acpController else { continue }
                 Task { @MainActor in
                     await controller.setAutoApproveAllToolPermissions(runtime.autoApproveAllACPToolPermissions)
                     if runtime.autoApproveAllACPToolPermissions, let pendingApproval = session.pendingApproval {

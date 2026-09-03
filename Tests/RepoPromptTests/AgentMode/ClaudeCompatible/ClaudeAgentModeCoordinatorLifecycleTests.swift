@@ -225,7 +225,7 @@ extension AgentModeRunServiceLifecycleTests {
         let queueStarted = await harness.service.submitQueuedClaudeSteeringIfSupported(session: session)
         XCTAssertTrue(queueStarted)
         await currentSessionRefGate.waitUntilArrived()
-        session.claudeController = replacementController
+        session.inProcessExecution.claudeController = replacementController
         setClaudeControllerLaunchSettings(
             for: session,
             coordinator: harness.host.claudeCoordinator,
@@ -236,7 +236,7 @@ extension AgentModeRunServiceLifecycleTests {
         await currentSessionRefGate.release()
         await session.claudeSteeringFlushTask?.value
 
-        guard let finalController = session.claudeController else {
+        guard let finalController = session.inProcessExecution.claudeController else {
             XCTFail("Expected replacement controller to remain installed")
             return
         }
@@ -308,7 +308,7 @@ extension AgentModeRunServiceLifecycleTests {
             )
         }
         await currentSessionRefGate.waitUntilArrived()
-        session.claudeController = replacementController
+        session.inProcessExecution.claudeController = replacementController
         setClaudeControllerLaunchSettings(
             for: session,
             coordinator: harness.host.claudeCoordinator,
@@ -320,7 +320,7 @@ extension AgentModeRunServiceLifecycleTests {
         await currentSessionRefGate.release()
         _ = await ensureTask.value
 
-        guard let finalController = session.claudeController else {
+        guard let finalController = session.inProcessExecution.claudeController else {
             XCTFail("Expected replacement workspace controller to remain installed")
             return
         }
@@ -382,12 +382,12 @@ extension AgentModeRunServiceLifecycleTests {
             )
         }
         await sendGate.waitUntilArrived()
-        session.claudeController = replacementController
+        session.inProcessExecution.claudeController = replacementController
         await sendGate.release()
 
         let sendOutcome = await sendTask.value
         XCTAssertEqual(sendOutcome, .superseded)
-        guard let finalController = session.claudeController else {
+        guard let finalController = session.inProcessExecution.claudeController else {
             XCTFail("Expected replacement controller to remain installed")
             return
         }
@@ -418,7 +418,7 @@ extension AgentModeRunServiceLifecycleTests {
         )
         let session = AgentModeViewModel.TabSession(tabID: UUID())
         session.selectedAgent = .claudeCode
-        session.claudeController = oldController
+        session.inProcessExecution.claudeController = oldController
         harness.host.test_installLiveSession(session)
         let runtime = resolvedClaudeLaunchPolicy(
             profile: session.permissionProfile,
@@ -442,7 +442,7 @@ extension AgentModeRunServiceLifecycleTests {
         let ownership = try XCTUnwrap(session.activeRunOwnership)
         await sendGate.waitUntilArrived()
         let agentTask = try XCTUnwrap(session.agentTask)
-        session.claudeController = replacementController
+        session.inProcessExecution.claudeController = replacementController
         await sendGate.release()
         await agentTask.value
 
@@ -501,7 +501,7 @@ extension AgentModeRunServiceLifecycleTests {
             XCTAssertEqual(recorder.events.count(where: { $0 == "handoff:true" }), 1, row.name)
             XCTAssertEqual(recorder.events.count(where: { $0 == "handoff:false" }), 0, row.name)
             XCTAssertTrue(recorder.contains("attachments:deleteFiles"), row.name)
-            XCTAssertNotNil(session.claudeController, row.name)
+            XCTAssertNotNil(session.inProcessExecution.claudeController, row.name)
             XCTAssertFalse(recorder.contains("terminal-\(row.name):shutdown"), row.name)
         }
     }
@@ -537,7 +537,7 @@ extension AgentModeRunServiceLifecycleTests {
         XCTAssertEqual(recorder.events.count(where: { $0.hasPrefix("commit:") }), 1)
         XCTAssertEqual(recorder.events.count(where: { $0 == "handoff:true" }), 1)
         XCTAssertEqual(recorder.events.count(where: { $0 == "handoff:false" }), 0)
-        XCTAssertNotNil(session.claudeController)
+        XCTAssertNotNil(session.inProcessExecution.claudeController)
         XCTAssertFalse(recorder.contains("stream-end:shutdown"))
     }
 
@@ -577,7 +577,7 @@ extension AgentModeRunServiceLifecycleTests {
             session.items.last(where: { $0.kind == .error })?.text,
             "RepoPrompt MCP failed to initialize for Claude (session runtime-init-failure)."
         )
-        XCTAssertNil(session.claudeController)
+        XCTAssertNil(session.inProcessExecution.claudeController)
         await shutdownGate.waitUntilArrived()
         await shutdownGate.release()
         await harness.host.claudeCoordinator.awaitPendingClaudeResumeTransferIfNeeded(for: session)
@@ -918,7 +918,7 @@ extension AgentModeRunServiceLifecycleTests {
         let controller = LifecycleFakeNativeController(recorder: recorder, label: "warm")
         let session = AgentModeViewModel.TabSession(tabID: UUID())
         session.selectedAgent = .claudeCode
-        session.claudeController = controller
+        session.inProcessExecution.claudeController = controller
         setClaudeControllerLaunchSettings(
             for: session,
             coordinator: harness.host.claudeCoordinator,
@@ -931,7 +931,7 @@ extension AgentModeRunServiceLifecycleTests {
 
         let detached = harness.host.claudeCoordinator.detachForWorkspaceSwitchFinalizeSync(session)
         XCTAssertNotNil(detached)
-        XCTAssertNil(session.claudeController)
+        XCTAssertNil(session.inProcessExecution.claudeController)
         XCTAssertNil(harness.host.claudeCoordinator.test_controllerLaunchSettings(for: session))
         XCTAssertEqual(session.pendingSupersedingTurnCompletions, 0)
         XCTAssertFalse(

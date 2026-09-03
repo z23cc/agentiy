@@ -194,6 +194,23 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case watcherUnknownScope
     case watcherScopeClosed
     case watcherInvalidRequest(String)
+    // ADR-0011 P2: agent-host-v1 codec and agent session log (rust/ffi-contract/abi-v1.json
+    // `agentSessionHostV1`). Per-call errors of `AgentHostProtocolV1` / `AgentSessionLog`; none of
+    // them means the Rust runtime itself is broken.
+    case agentHostFrameMalformed(String)
+    case agentHostFrameTooLarge(actual: UInt64, maximum: UInt64)
+    case agentSessionLogIo(operation: String, message: String)
+    case agentSessionLogNotFound(path: String)
+    case agentSessionLogInvalidFile(String)
+    case agentSessionLogUnsupportedSchemaVersion(found: UInt16, supported: UInt16)
+    case agentSessionLogSessionMismatch(expected: String, found: String)
+    case agentSessionLogInvalidSessionId(String)
+    case agentSessionLogRecordTooLarge(actual: UInt64, maximum: UInt64)
+    case agentSessionLogCursorOutOfRange(cursor: UInt64, nextCursor: UInt64)
+    case agentSessionLogMalformedRecord(cursor: UInt64, message: String)
+    case agentSessionLogSnapshotRejected(String)
+    case agentSessionLogClosed
+    case agentRunLifecycleInvalidRequest(String)
     case transportFailure(String)
 }
 
@@ -259,6 +276,20 @@ extension CoreBridgeError: LocalizedError {
         case .watcherUnknownScope: "The file-system watcher scope is unknown or already closed."
         case .watcherScopeClosed: "The file-system watcher scope is closed."
         case let .watcherInvalidRequest(message): "The file-system watcher request is invalid: \(message)"
+        case let .agentHostFrameMalformed(message): "The agent-host-v1 frame is malformed: \(message)"
+        case let .agentHostFrameTooLarge(actual, maximum): "The agent-host-v1 frame payload of \(actual) bytes exceeds the \(maximum)-byte cap."
+        case let .agentSessionLogIo(operation, message): "Agent session log \(operation) failed: \(message)"
+        case let .agentSessionLogNotFound(path): "The agent session log file does not exist: \(path)"
+        case let .agentSessionLogInvalidFile(message): "The agent session log file is invalid: \(message)"
+        case let .agentSessionLogUnsupportedSchemaVersion(found, supported): "The agent session log uses schema version \(found); this build supports \(supported) and did not load it."
+        case let .agentSessionLogSessionMismatch(expected, found): "The agent session log belongs to session \(found), not \(expected)."
+        case let .agentSessionLogInvalidSessionId(value): "The agent session identifier is not a UUID: \(value)"
+        case let .agentSessionLogRecordTooLarge(actual, maximum): "The agent session event of \(actual) bytes exceeds the \(maximum)-byte record cap."
+        case let .agentSessionLogCursorOutOfRange(cursor, nextCursor): "The agent session log cursor \(cursor) is outside the recorded range (next cursor \(nextCursor))."
+        case let .agentSessionLogMalformedRecord(cursor, message): "The agent session log record at cursor \(cursor) does not decode: \(message)"
+        case let .agentSessionLogSnapshotRejected(message): "The agent session snapshot was rejected: \(message)"
+        case .agentSessionLogClosed: "The agent session log is closed."
+        case let .agentRunLifecycleInvalidRequest(message): "The agent run lifecycle request is invalid: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

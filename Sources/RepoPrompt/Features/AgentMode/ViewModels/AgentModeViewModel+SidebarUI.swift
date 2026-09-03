@@ -16,6 +16,7 @@ extension AgentModeViewModel {
             visibleSessionCount: sessionSidebarVisibleSessionCount,
             archivedVisibleSessionCount: sessionSidebarArchivedVisibleSessionCount
         )
+        scheduleListedHostSessionRefresh()
         #if DEBUG
             let storeUpdateDurationMS = storeUpdateStartMS.map { AgentModePerfDiagnostics.elapsedMS(since: $0) }
             func emitSidebarSync(

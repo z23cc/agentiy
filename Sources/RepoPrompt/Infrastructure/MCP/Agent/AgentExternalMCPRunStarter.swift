@@ -188,6 +188,8 @@ enum AgentExternalMCPRunStarter {
                 throw MCPError.internalError("Failed to resolve target agent session.")
             }
 
+            // Execution enters the shared `AgentSessionConnection`: a fresh run
+            // goes through presentation then `start`; a follow-up uses `steer`.
             let delivery: AgentModeViewModel.MCPInstructionDispatch = if let dispatchInstruction {
                 try await dispatchInstruction(sessionID, target.tabID, message, workflow, agentModeVM)
             } else {

@@ -1029,8 +1029,22 @@ class WindowStatesManager: ObservableObject {
         )
     }
 
+    /// Detaches every window from host-owned Agent Mode sessions. Does not stop providers.
+    /// Called on GUI quit (ADR-0011 P3).
+    func detachAllHostAgentSessions() async {
+        let windowIDs = allWindows.map(\.windowID)
+        await withTaskGroup(of: Void.self) { group in
+            for windowID in windowIDs {
+                group.addTask { @MainActor [weak self] in
+                    guard let self, let ws = window(withID: windowID) else { return }
+                    await ws.agentModeViewModel.detachHostSessionsForAppTermination()
+                }
+            }
+        }
+    }
+
     /// Shuts down all agent processes (Claude CLI, Codex app-server) across every window.
-    /// Called during app termination to prevent orphaned child processes.
+    /// Explicit "Stop all agents" only — GUI quit uses `detachAllHostAgentSessions`.
     /// Safe to call after `signalTermination()` — only performs cancellation and process teardown,
     /// no UI-observed state mutations.
     func shutdownAllAgentSessions() async {

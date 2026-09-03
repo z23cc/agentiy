@@ -141,6 +141,9 @@ final class AgentRunTerminalCommitBarrier {
     // the actual async task needed to execute provider/UI teardown.
     private var appTerminalTeardownTasks: [AgentRunOwnership: Task<Void, Never>] = [:]
     private var settlementCoordinator = DomainAgentRunTerminalSettlementCoordinator()
+    /// Fire-and-forget mirror of every accepted terminal commit for the seam (P1.5).
+    /// Invoked after the commit is published and post-commit work ran; never awaited.
+    var terminalCommitObserver: (@MainActor (_ outcome: DomainAgentRunTerminalOutcome, _ tabID: UUID) -> Void)?
 
     init() {}
 
@@ -352,6 +355,7 @@ final class AgentRunTerminalCommitBarrier {
         lifecycle.completeTerminalCommit()
         recordTerminalBarrierState(false, request: request)
         request.postCommit()
+        terminalCommitObserver?(request.outcome, binding.tabID)
 
         if let followUpInstruction {
             binding.hooks.startFollowUpRun(followUpInstruction)

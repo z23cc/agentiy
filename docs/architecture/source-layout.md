@@ -17,7 +17,11 @@ Sources/
       Views/
     Features/
       AgentMode/                 # Agent Mode UI, models, view models, onboarding, recommendations, and shared agent runtime ownership
+        Connection/              # AgentSessionConnection client seam (protocol + value types) between presentation and execution (ADR-0011)
+        Connection/InProcess/    # InProcessAgentSessionConnection, its executor bridge, and connection-owned per-session execution state
         Views/ContextDrawer/     # Context Composer shell, tabs, selected-context rows, previews, and click-time export context
+        Connection/              # ADR-0011 client seam: `AgentSessionConnection` protocol + value types (cursor, start spec, attach result, events)
+        Connection/InProcess/    # P1 production connection wrapping the in-process stack; owns per-session provider execution state
         Runtime/Providers/       # provider/runtime enum and provider factory shared by Context Builder, Agent Mode, MCP, and recommendations
         History/                 # cross-workspace session history scanner, MCP tool service (history.list_sessions / search / time / get_session)
       Chat/                      # chat/oracle models, services, diff state, view models, and views
@@ -68,13 +72,16 @@ The external products and emitted binaries are `Agentry` and `agentry-mcp`. The 
 The Phase 0 Rust foundation lives in the virtual workspace under `rust/`; it is subordinate to the repository build orchestration rather than a second top-level product graph. Its minimal members and dependency direction are:
 
 ```text
-rust/crates/proto       # agentry-proto: versioned payload contracts; no runtime or FFI dependency
+rust/crates/proto              # agentry-proto: versioned payload contracts (incl. schema/agent_host_v1.proto
+        ↑                      #   and its checked-in prost output); no runtime or FFI dependency
+        ├── rust/crates/agent_session_log  # agentry-agent-session-log: ADR-0011 event log/snapshot files;
+        │                                  #   depends on proto only, no runtime or UniFFI dependency
+rust/crates/runtime            # agentry-runtime: future Tokio/registry/queue owner; no UniFFI dependency
         ↑
-rust/crates/runtime     # agentry-runtime: future Tokio/registry/queue owner; no UniFFI dependency
-        ↑
-rust/crates/ffi         # agentry-ffi: the only product crate allowed to depend on UniFFI
+rust/crates/ffi                # agentry-ffi: the only product crate allowed to depend on UniFFI
 
-rust/tools/xtask        # repository-only artifact/codegen tool; not a product crate
+rust/tools/xtask               # repository-only artifact/codegen tool (UniFFI bindings, protox+prost-build
+                               #   proto codegen, archive); not a product crate
 ```
 
 Future domain crates belong under `rust/crates/domain/<domain>/`, binaries under `rust/bins/<product>/`, and repository tools under `rust/tools/<tool>/`. Phase 0 intentionally does not create empty domain or binary crates before they have an owned behavior boundary. All members share `rust/Cargo.lock`, the pinned `rust/rust-toolchain.toml`, the arm64-only `rust/.cargo/config.toml`, and workspace lint/profile policy.
@@ -196,6 +203,16 @@ The guardrail script verifies:
 - removed Prompt UI cleanup artifacts (`PresetBottomBar.swift`, `SelectedFileView.swift`, `SelectedFilesPanelViewModel.swift`) and unique stale symbols (`PresetBottomBar`, `SelectedFilesContentView`, `SelectedFilesPanelViewModel`, `PresetTwoPanePopover_Copy`, `CopyPresetPreviewView`, `PresetTwoPanePopover_Chat`) are not referenced from app source;
 - `App/WindowState.swift` does not reintroduce scoped `searchViewModel` wiring;
 - `WorkspaceFilesViewModel.swift` does not reintroduce the removed `loadContentsRecursively` eager-loading seam.
+
+`Scripts/agent_session_boundary_guardrails.sh` (also run by `make guardrails`; tested by `Scripts/test_agent_session_boundary_guardrails.py`) enforces the Agent Mode presentation/execution boundary from [`adr-0011-agent-session-host.md`](adr-0011-agent-session-host.md):
+
+- `Features/AgentMode/{Views,ViewModels}` never reference provider execution types (`ClaudeRustBackedNativeSessionAdapter`, `CodexAppServerClient`, `ACPAgentSessionController`, `CoreAgentSession`, `CoreAgentProviderSession`, `CoreAgentProviderRuntimeTransport`), socket paths or transport primitives, host protocol types, the concrete `InProcessAgentSession*` types, the `inProcessExecution` accessor, or `.codexController` / `.claudeController` / `.acpController` handles;
+- `AgentTabSession.swift` stores no provider controller properties — it is a presentation cache with an opaque `connectionAttachment` slot;
+- `InProcessAgentSessionConnection` is constructed only under `Sources/RepoPrompt/App` (the composition root);
+- `Features/AgentMode/Connection/AgentSessionConnection.swift` declares `protocol AgentSessionConnection: Actor`;
+- `Sources/RepoPromptMCP` (the future Agent Session Host binary) imports neither AppKit nor SwiftUI.
+
+Execution-side code (`Features/AgentMode/Runtime`, `Features/AgentMode/Connection/InProcess`, `Features/Diagnostics`) may reach provider handles through `AgentTabSession.inProcessExecution`; that accessor is a P1 transitional surface scheduled for removal with `HostAgentSessionConnection`.
 
 ## Historical resolved items
 

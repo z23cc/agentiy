@@ -60,7 +60,7 @@ extension AgentModeRunServiceLifecycleTests {
         XCTAssertEqual(outcome, .ready, "a stale hasTurnInFlight=true must defer recycle, not fail or supersede")
         XCTAssertFalse(recorder.contains("stale-turn-in-flight:shutdown"), "the in-flight controller must not be torn down")
         XCTAssertFalse(recorder.contains("factory:unexpected-recycle"), "no replacement controller may be constructed while deferred")
-        guard let finalController = session.claudeController else {
+        guard let finalController = session.inProcessExecution.claudeController else {
             return XCTFail("expected the original controller to remain installed")
         }
         XCTAssertEqual(

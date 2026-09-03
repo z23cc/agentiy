@@ -16,6 +16,8 @@ final class ClaudeIntegratedAgentModeRunner {
     private let claudeCoordinator: ClaudeAgentModeCoordinator
     private let hooks: AgentModeRunService.Hooks
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
+    /// Fire-and-forget mirror of every consumed native runtime event for the seam (P1.5).
+    var runtimeEventObserver: (@MainActor (NativeAgentRuntimeEvent, AgentTabSession) -> Void)?
 
     #if DEBUG
         private func reasoningDebug(_ message: @autoclosure () -> String) {
@@ -67,7 +69,7 @@ final class ClaudeIntegratedAgentModeRunner {
         session.reasoningItemIDsByGroupID.removeAll()
         session.codexReasoningSegmentsByKey.removeAll()
 
-        let runID = session.claudeController.flatMap { _ in
+        let runID = session.inProcessExecution.claudeController.flatMap { _ in
             AgentModeProcessRunIdentity.existingProcessRunID(for: session)
         } ?? AgentModeProcessRunIdentity.startFreshProcessRun(for: session)
         let lease = makeLease(runID)
@@ -245,6 +247,7 @@ final class ClaudeIntegratedAgentModeRunner {
             if let ownership = session.activeRunOwnership, ownership.attemptID == runAttemptID {
                 session.recordRunProgress(ownership: ownership, kind: .providerEvent, stage: .running)
             }
+            runtimeEventObserver?(event, session)
 
             switch event {
             case let .stream(result):

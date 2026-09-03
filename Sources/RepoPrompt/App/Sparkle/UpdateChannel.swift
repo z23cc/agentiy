@@ -62,4 +62,20 @@ final class SparkleUpdateFeedDelegate: NSObject, SPUUpdaterDelegate {
         let feedURL = UpdateChannel.load().feedURLString
         return feedURL.isEmpty ? nil : feedURL
     }
+
+    /// Checkpoint every host session before the new binary replaces `agentry-mcp`.
+    /// Failure leaves the running host untouched (design §4.4).
+    func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        Task { @MainActor in
+            let allowed = await AgentSessionHostUpdateGate.prepareUpdateOrAllowIfNoHost()
+            if allowed {
+                installHandler()
+            }
+        }
+        return true
+    }
 }

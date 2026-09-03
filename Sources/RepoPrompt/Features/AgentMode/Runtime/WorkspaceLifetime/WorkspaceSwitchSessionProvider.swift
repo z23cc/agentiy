@@ -25,8 +25,7 @@ struct WorkspaceSwitchSessionCleanupTarget {
     /// Distinct run IDs needing MCP run-routing cleanup: the run captured at
     /// prepare time plus any successor run present at finalize time.
     let runIDs: [UUID]
-    let provider: HeadlessAgentProvider?
-    let acpController: ACPAgentSessionController?
+    let detachedProviderHandles: InProcessDetachedProviderHandles
     let detachedClaude: ClaudeAgentModeCoordinator.DetachedClaudeController?
     let detachedCodex: CodexAgentModeCoordinator.DetachedCodexController?
 }
@@ -165,10 +164,10 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
         codexCoordinator: CodexAgentModeCoordinator,
         claudeCoordinator: ClaudeAgentModeCoordinator
     ) async {
-        if let provider = target.provider {
+        if let provider = target.detachedProviderHandles.provider {
             await provider.dispose()
         }
-        if let acpController = target.acpController {
+        if let acpController = target.detachedProviderHandles.acpController {
             await acpController.cancelPrompt()
             await acpController.shutdown()
         }
@@ -246,27 +245,6 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
         #if DEBUG
             test_backgroundCleanupDrainTasks.removeAll()
         #endif
-    }
-}
-
-extension AgentTabSession {
-    func disposeProviderIfPresent() async {
-        let provider = provider
-        self.provider = nil
-        if let provider {
-            await provider.dispose()
-        }
-    }
-
-    func teardownACPControllerIfPresent() async {
-        acpSteeringFlushTask?.cancel()
-        acpSteeringFlushTask = nil
-        pendingACPSteeringInstructions.removeAll()
-        guard let controller = acpController else { return }
-        acpController = nil
-        AgentModeProcessRunIdentity.clearProcessRunID(for: self)
-        await controller.cancelPrompt()
-        await controller.shutdown()
     }
 }
 

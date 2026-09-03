@@ -1,4 +1,5 @@
 use crate::identity::{self, BuildIdentity, MINIMUM_MACOS, TARGET};
+use crate::proto_codegen;
 use anyhow::{Context, Result, bail};
 use camino::Utf8PathBuf;
 use serde::Serialize;
@@ -45,17 +46,31 @@ struct GeneratedManifest<'a> {
 
 pub fn run(repo_root: &Path, check: bool) -> Result<()> {
     let target_dir = controlled_target_dir(repo_root)?;
+    let stage = repo_root.join(".build/agentry-rust/codegen-stage");
+    if stage.exists() {
+        fs::remove_dir_all(&stage)?;
+    }
+    fs::create_dir_all(&stage)?;
+
+    // The agent-host-v1 module is rendered first: it is a compile input of `agentry-proto`, so in
+    // write mode it must be on disk before the staticlib build, and the build identity computed
+    // below must cover the bytes the codec was actually compiled from. In check mode the committed
+    // file is used for the build and compared with the fresh render at the end like every other
+    // artifact.
+    let proto_artifact = GeneratedArtifact {
+        relative_path: proto_codegen::GENERATED_PATH,
+        bytes: normalize_generated_text(&proto_codegen::generate(repo_root, &stage)?),
+    };
+    if !check {
+        write_artifacts(repo_root, std::slice::from_ref(&proto_artifact))?;
+    }
+
     let build_identity = identity::calculate(repo_root, PROFILE)?;
     let release_identity = identity::calculate(repo_root, "release")?;
     let archive = build_staticlib(repo_root, &target_dir, PROFILE, &build_identity)?;
     let staged_archive = stage_archive(repo_root, PROFILE, &archive, &build_identity, false)?;
     let archive_sha256 = identity::digest_file(&staged_archive)?;
 
-    let stage = repo_root.join(".build/agentry-rust/codegen-stage");
-    if stage.exists() {
-        fs::remove_dir_all(&stage)?;
-    }
-    fs::create_dir_all(&stage)?;
     generate_uniffi(repo_root, &stage, &staged_archive)?;
 
     let swift = fs::read(stage.join("AgentryCore.swift"))
@@ -83,6 +98,7 @@ pub fn run(repo_root: &Path, check: bool) -> Result<()> {
             relative_path: "rust/crates/ffi/src/generated/contract_identity.rs",
             bytes: render_rust_identity(&build_identity).into_bytes(),
         },
+        proto_artifact,
     ];
 
     for artifact in &mut artifacts {
@@ -132,6 +148,27 @@ pub fn run(repo_root: &Path, check: bool) -> Result<()> {
             build_identity.build_fingerprint,
             staged_archive.display()
         );
+    }
+    Ok(())
+}
+
+/// Renders (or checks) only the agent-host-v1 module. Same bytes as the `generate` path.
+pub fn run_proto_only(repo_root: &Path, check: bool) -> Result<()> {
+    let stage = repo_root.join(".build/agentry-rust/proto-stage");
+    if stage.exists() {
+        fs::remove_dir_all(&stage)?;
+    }
+    fs::create_dir_all(&stage)?;
+    let artifact = GeneratedArtifact {
+        relative_path: proto_codegen::GENERATED_PATH,
+        bytes: normalize_generated_text(&proto_codegen::generate(repo_root, &stage)?),
+    };
+    if check {
+        check_artifacts(repo_root, std::slice::from_ref(&artifact))?;
+        println!("agent-host-v1 module matches {}", artifact.relative_path);
+    } else {
+        write_artifacts(repo_root, std::slice::from_ref(&artifact))?;
+        println!("rendered {}", artifact.relative_path);
     }
     Ok(())
 }

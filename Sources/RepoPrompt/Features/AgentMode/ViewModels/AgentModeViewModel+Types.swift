@@ -197,6 +197,7 @@ extension AgentModeViewModel {
         let stashedTabSignatures: [AgentSessionSidebarStashedTabSignature]
         let archivedSessionsExpanded: Bool
         let showComposeTabsWithoutAgentSessions: Bool
+        let attachableHostSessionIDs: [UUID]
     }
 
     struct SidebarListProjection {
@@ -204,6 +205,7 @@ extension AgentModeViewModel {
         let filteredSessions: [SidebarSession]
         let pagedSessions: [SidebarSession]
         let effectiveVisibleSessionCount: Int
+        let attachableHostSessions: [AgentSessionListedSummary]
         let archivedSessionTabsForHeader: [StashedTab]
         let pagedArchivedSessionTabsForRows: [StashedTab]
         let archivedDateInfoByStashedTabID: [UUID: SidebarSessionDateInfo]

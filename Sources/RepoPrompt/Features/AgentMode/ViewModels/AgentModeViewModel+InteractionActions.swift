@@ -2,26 +2,22 @@ import Foundation
 
 @MainActor
 extension AgentModeViewModel {
+    /// Answers the pending approval through the session connection. The answer is applied on
+    /// the next main-actor turn; a stale or already-answered request settles as a rejected
+    /// command and is ignored, exactly like the inline guard this method used to perform.
     func submitApprovalDecision(tabID: UUID, decision: AgentApprovalDecision) {
         guard let session = sessions[tabID],
               let request = session.pendingApproval
         else {
             return
         }
-        switch request.requestID {
-        case .codex:
-            codexCoordinator.submitApprovalDecision(session: session, decision: decision)
-        case .claudeControl:
-            claudeCoordinator.submitApprovalDecision(session: session, decision: decision)
-        case let .acp(requestID):
-            session.pendingApproval = nil
-            if session.runState == .waitingForApproval {
-                session.runState = .running
-            }
-            requestUIRefresh(tabID: tabID, urgent: true)
-            Task { [controller = session.acpController] in
-                await controller?.respondToPermissionRequest(id: requestID, decision: decision)
-            }
+        Task { [weak self] in
+            guard let self else { return }
+            try? await respondThroughConnection(
+                session: session,
+                interactionID: request.id,
+                answer: .approval(decision)
+            )
         }
     }
 
@@ -38,10 +34,12 @@ extension AgentModeViewModel {
         guard currentRequest.id == requestID else {
             throw AgentCodexHookReviewResolutionError.staleRequest(currentID: currentRequest.id)
         }
-        try await codexCoordinator.resolveCodexHookReview(
+        // Execution-side resolution errors (`AgentCodexHookReviewResolutionError`) propagate
+        // unchanged: the in-process connection rethrows the executor's original error.
+        try await respondThroughConnection(
             session: session,
-            requestID: requestID,
-            decision: decision
+            interactionID: requestID,
+            answer: .codexHookReview(decision)
         )
     }
 
@@ -60,7 +58,14 @@ extension AgentModeViewModel {
         else {
             return
         }
-        codexCoordinator.submitMCPElicitationResponse(session: session, request: request, response: response)
+        Task { [weak self] in
+            guard let self else { return }
+            try? await respondThroughConnection(
+                session: session,
+                interactionID: request.id,
+                answer: .mcpElicitation(response)
+            )
+        }
     }
 
     func submitApplyEditsReviewDecision(

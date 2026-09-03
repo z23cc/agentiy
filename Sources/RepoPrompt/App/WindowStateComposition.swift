@@ -159,14 +159,21 @@ enum WindowStateCompositionFactory {
         )
 
         // 13) Agent mode (for minimal agent UI)
+        // ADR-0011 P3: the view model only knows `AgentSessionConnection`; this is the one
+        // place that constructs the host client. In-process remains tests-only.
+        let agentSessionConnection = HostAgentSessionConnection(
+            configuration: .makeProductionConfiguration()
+        )
         let agentModeViewModel = AgentModeViewModel(
             windowID: windowID,
+            sessionConnection: agentSessionConnection,
             promptManager: promptManager,
             workspaceManager: workspaceManager,
             mcpServer: mcpServer,
             oracleViewModel: oracleViewModel,
             applyEditsApprovalStore: applyEditsApprovalStore
         )
+        agentModeViewModel.startConsumingSessionConnectionEvents()
         workspaceFilesViewModel.setSessionWorktreeBindingStatesProvider { [weak agentModeViewModel] sessionIDs in
             agentModeViewModel?.worktreeBindingStates(forAgentSessionIDs: sessionIDs) ?? [:]
         }

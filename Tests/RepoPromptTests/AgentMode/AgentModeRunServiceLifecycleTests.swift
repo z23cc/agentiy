@@ -86,7 +86,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             XCTAssertEqual(session.runState, .failed, agent.rawValue)
             XCTAssertNil(session.activeRunAttemptID, agent.rawValue)
             XCTAssertNil(session.agentTask, agent.rawValue)
-            XCTAssertNil(session.provider, agent.rawValue)
+            XCTAssertNil(session.inProcessExecution.provider, agent.rawValue)
             XCTAssertEqual(session.items.filter { $0.kind == .error }.map(\.text), [LifecycleTestError.workspaceMissing.errorDescription ?? ""], agent.rawValue)
             XCTAssertTrue(recorder.contains("handoff:false"), agent.rawValue)
             XCTAssertTrue(recorder.contains("run-active:false"), agent.rawValue)
@@ -677,7 +677,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             await session.agentTask?.value
         }
         XCTAssertEqual(session.runState, .completed)
-        let controller = try XCTUnwrap(session.acpController)
+        let controller = try XCTUnwrap(session.inProcessExecution.acpController)
         let wasReusable = await controller.hasReusableSession
         XCTAssertTrue(wasReusable)
 
@@ -707,7 +707,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
 
         await fixture.host.prepareForWindowClose()
 
-        XCTAssertNil(fixture.session.acpController)
+        XCTAssertNil(fixture.session.inProcessExecution.acpController)
         try await waitUntilProcessExits(fixture.processID, "Window close should terminate retained ACP process")
         XCTAssertFalse(Self.processIsRunning(fixture.processID))
         let remainsReusable = await fixture.controller.hasReusableSession
@@ -741,7 +741,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                 XCTAssertTrue(issues.first?.message.contains("owning workspace") == true, name)
             }
 
-            XCTAssertNil(fixture.session.acpController, name)
+            XCTAssertNil(fixture.session.inProcessExecution.acpController, name)
             XCTAssertNil(fixture.host.sessions[fixture.session.tabID], name)
             XCTAssertFalse(fixture.host.tabsWithActiveAgentRun.contains(fixture.session.tabID), name)
             try await waitUntilProcessExits(
@@ -886,7 +886,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test.codexBufferedCancellation")
         let baselineDrainGeneration = session.providerTerminalDrainGeneration
-        session.codexController = controller
+        session.inProcessExecution.codexController = controller
         session.appendItem(.user("question", sequenceIndex: session.nextSequenceIndex))
         let commandInvocationID = UUID()
         session.appendItem(.toolResult(
@@ -1395,7 +1395,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test.slowDisposal")
-        session.provider = provider
+        session.inProcessExecution.provider = provider
 
         try await withLifecycleTimeout("terminal cancellation publication", timeoutSeconds: 0.2) {
             await harness.service.cancelRun(
@@ -1406,7 +1406,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         }
 
         XCTAssertEqual(session.runState, .cancelled)
-        XCTAssertNil(session.provider)
+        XCTAssertNil(session.inProcessExecution.provider)
         XCTAssertNil(session.runID)
         XCTAssertNotNil(session.lastTerminalCommitRevision)
         try await waitUntil("Slow disposal should start asynchronously") {
@@ -1438,7 +1438,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test.awaitTeardown")
-        session.provider = provider
+        session.inProcessExecution.provider = provider
 
         let cancelTask = Task {
             await harness.service.cancelRun(
@@ -1481,7 +1481,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test.lateAwaitTeardown")
-        session.provider = provider
+        session.inProcessExecution.provider = provider
 
         await harness.service.cancelRun(
             tabID: session.tabID,
@@ -1525,7 +1525,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test.executionLocation")
-        session.provider = provider
+        session.inProcessExecution.provider = provider
 
         try await withLifecycleTimeout("execution-location terminal publication", timeoutSeconds: 0.2) {
             await harness.service.cancelRun(
@@ -1537,7 +1537,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         }
 
         XCTAssertEqual(session.runState, .cancelled)
-        XCTAssertNil(session.provider)
+        XCTAssertNil(session.inProcessExecution.provider)
         XCTAssertNil(session.runID)
         XCTAssertNotNil(session.lastTerminalCommitRevision)
         try await waitUntil("Execution-location teardown should continue asynchronously") {
@@ -1571,7 +1571,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             switch row {
             case .codex:
                 session.selectedAgent = .codexExec
-                session.codexController = codexController
+                session.inProcessExecution.codexController = codexController
 
                 await harness.service.cancelRun(
                     tabID: session.tabID,
@@ -1579,7 +1579,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                     completion: .terminalPublished
                 )
 
-                XCTAssertNil(session.codexController, row.rawValue)
+                XCTAssertNil(session.inProcessExecution.codexController, row.rawValue)
                 try await waitUntil("Codex teardown should complete after terminal publication") {
                     recorder.contains("codex:shutdown")
                 }
@@ -1591,7 +1591,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                     failSend: false
                 )
                 session.selectedAgent = .claudeCode
-                session.claudeController = controller
+                session.inProcessExecution.claudeController = controller
 
                 await harness.service.cancelRun(
                     tabID: session.tabID,
@@ -1599,14 +1599,14 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                     completion: .terminalPublished
                 )
 
-                XCTAssertNil(session.claudeController, row.rawValue)
+                XCTAssertNil(session.inProcessExecution.claudeController, row.rawValue)
                 try await waitUntil("Claude teardown should complete after terminal publication") {
                     recorder.contains("claude:shutdown")
                 }
                 assertOrderedEvents(["mcp-cancel", "commit:", "claude:interrupt:interrupt", "claude:shutdown"], in: recorder, row: row.rawValue, prefixMatches: true)
             case .headless:
                 session.selectedAgent = .cursor
-                session.provider = headlessProvider
+                session.inProcessExecution.provider = headlessProvider
 
                 await harness.service.cancelRun(
                     tabID: session.tabID,
@@ -1614,7 +1614,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                     completion: .terminalPublished
                 )
 
-                XCTAssertNil(session.provider, row.rawValue)
+                XCTAssertNil(session.inProcessExecution.provider, row.rawValue)
                 try await waitUntil("Headless teardown should complete after terminal publication") {
                     recorder.contains("headless:dispose")
                 }
@@ -1629,7 +1629,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                         _ = try await controller.bootstrap()
                     }
                     session.selectedAgent = .openCode
-                    session.acpController = controller
+                    session.inProcessExecution.acpController = controller
 
                     try await withLifecycleTimeout("ACP cancel run") {
                         await harness.service.cancelRun(
@@ -1639,7 +1639,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                         )
                     }
 
-                    XCTAssertNil(session.acpController, row.rawValue)
+                    XCTAssertNil(session.inProcessExecution.acpController, row.rawValue)
                     try await waitUntil("ACP teardown should complete after terminal publication") {
                         recorder.contains("acp:session/cancel")
                     }
@@ -1673,14 +1673,14 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.installRunID(runID)
         session.runState = .running
         session.codexConversationID = "lifecycle"
-        session.codexController = controller
+        session.inProcessExecution.codexController = controller
         session.beginRunAttempt(source: "test.codexExactCancellation")
         session.codexAuthoritativeActiveTurn = try .init(
             threadID: "lifecycle",
             turnID: "owned-turn",
             turnKind: .user,
             controllerInstanceID: ObjectIdentifier(controller),
-            controllerGeneration: session.codexControllerGeneration,
+            controllerGeneration: session.inProcessExecution.codexControllerGeneration,
             runID: runID,
             runAttemptID: XCTUnwrap(session.activeRunAttemptID)
         )
@@ -1793,7 +1793,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         claudeControllerFactory: ClaudeAgentModeCoordinator.ClaudeControllerFactory? = nil,
         headlessProviderFactory: AgentModeViewModel.HeadlessProviderFactory? = nil,
         acpProviderFactory: AgentModeViewModel.ACPProviderFactory? = nil,
-        acpControllerFactory: AgentModeViewModel.ACPControllerFactory? = nil,
+        acpControllerFactory: AgentModeRunService.ACPControllerFactory? = nil,
         flushPendingAssistantDelta: ((AgentModeViewModel.TabSession) -> Void)? = nil,
         publishTerminalCommit: ((AgentModeViewModel.TabSession, AgentRunTerminalCommitRevision) async -> Void)? = nil,
         autoSignalACPRouting: Bool = false
@@ -1812,7 +1812,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             recorder.record("factory:acp-controller")
             return try ACPAgentSessionController(provider: provider, runRequest: request)
         }
-        let trackedACPControllerFactory: AgentModeViewModel.ACPControllerFactory = { [weak self] provider, request in
+        let trackedACPControllerFactory: AgentModeRunService.ACPControllerFactory = { [weak self] provider, request in
             let controller = try baseACPControllerFactory(provider, request)
             self?.registerACPController(controller)
             return controller
@@ -1824,8 +1824,12 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             }
         }
         let serverEnabler: AgentModeViewModel.MCPServerEnabler = { true }
+        // The test harness is the composition root for this view model, so it picks the
+        // concrete seam implementation the same way `WindowStateComposition` does.
+        let sessionExecutor = InProcessAgentSessionExecutor()
         let host = AgentModeViewModel(
             testWindowID: 1,
+            testSessionConnection: InProcessAgentSessionConnection(executor: sessionExecutor),
             testWorkspacePath: FileManager.default.currentDirectoryPath,
             codexControllerFactory: { _, _, _, _, _, _ in codexController },
             claudeControllerFactory: claudeControllerFactory ?? { _, _, _, _ in
@@ -1838,6 +1842,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             connectionPolicyInstaller: policyInstaller,
             mcpServerEnabler: serverEnabler
         )
+        sessionExecutor.attach(viewModel: host)
         lifecycleHosts.append(host)
         let dependencies = AgentModeRunService.Dependencies(
             windowID: 1,
@@ -2001,7 +2006,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.selectedAgent = .openCode
         session.installRunID(UUID())
         session.runState = .completed
-        session.acpController = controller
+        session.inProcessExecution.acpController = controller
         return RetainedACPFixture(
             host: harness.host,
             session: session,
@@ -2019,7 +2024,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test")
-        session.claudeController = controller
+        session.inProcessExecution.claudeController = controller
         host?.test_installLiveSession(session)
         return session
     }
@@ -2047,7 +2052,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.runState = .running
         session.installRunID(UUID())
         session.beginRunAttempt(source: "test")
-        session.acpController = controller
+        session.inProcessExecution.acpController = controller
         return session
     }
 

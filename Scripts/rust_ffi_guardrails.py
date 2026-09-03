@@ -13,15 +13,31 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST = ROOT / "rust"
+# ADR-0011 P2 (design §11 row 3): `crates/agent_session_log` is the only implementation of the
+# Agent Session Host event log and is a product crate like proto/runtime/ffi -- it must never
+# depend on UniFFI (the ffi crate wraps it) and it is part of every default build.
+# `bins/agentry-mcp` is the ADR-0011 P7 Rust `agent-host` mode (design §4.1 / §8
+# P7). It is a product binary, not a UniFFI crate — same pattern as xtask
+# (workspace member, not default-member, not PRODUCT_MANIFESTS). Default builds
+# stay proto / session_log / runtime / ffi so in-process FFI consumers do not
+# grow a Unix-socket host dependency.
 EXPECTED_MEMBERS = [
     "crates/proto",
+    "crates/agent_session_log",
     "crates/runtime",
     "crates/ffi",
     "tools/xtask",
+    "bins/agentry-mcp",
 ]
-EXPECTED_DEFAULT_MEMBERS = ["crates/proto", "crates/runtime", "crates/ffi"]
+EXPECTED_DEFAULT_MEMBERS = [
+    "crates/proto",
+    "crates/agent_session_log",
+    "crates/runtime",
+    "crates/ffi",
+]
 PRODUCT_MANIFESTS = {
     "agentry-proto": RUST / "crates/proto/Cargo.toml",
+    "agentry-agent-session-log": RUST / "crates/agent_session_log/Cargo.toml",
     "agentry-runtime": RUST / "crates/runtime/Cargo.toml",
     "agentry-ffi": RUST / "crates/ffi/Cargo.toml",
 }
@@ -330,7 +346,9 @@ def main() -> int:
     if workspace_table.get("members") != EXPECTED_MEMBERS:
         failures.append("rust/Cargo.toml workspace members drifted from the frozen member patterns")
     if workspace_table.get("default-members") != EXPECTED_DEFAULT_MEMBERS:
-        failures.append("rust/Cargo.toml default-members must contain only proto/runtime/ffi")
+        failures.append(
+            "rust/Cargo.toml default-members must contain only proto/agent_session_log/runtime/ffi"
+        )
     if workspace_table.get("resolver") != "3":
         failures.append("rust/Cargo.toml must use resolver = 3")
 
@@ -363,9 +381,19 @@ def main() -> int:
 
     if "agentry-proto" not in product_dependencies.get("agentry-runtime", set()):
         failures.append("agentry-runtime must depend on agentry-proto")
+    session_log_dependencies = product_dependencies.get("agentry-agent-session-log", set())
+    if "agentry-proto" not in session_log_dependencies:
+        failures.append("agentry-agent-session-log must depend on agentry-proto")
+    if "agentry-runtime" in session_log_dependencies:
+        failures.append(
+            "agentry-agent-session-log must not depend on agentry-runtime -- the log is a leaf "
+            "format crate the runtime may later depend on, not the other way round"
+        )
     ffi_dependencies = product_dependencies.get("agentry-ffi", set())
-    if not {"agentry-proto", "agentry-runtime", "uniffi"}.issubset(ffi_dependencies):
-        failures.append("agentry-ffi must depend on proto/runtime/uniffi")
+    if not {"agentry-proto", "agentry-agent-session-log", "agentry-runtime", "uniffi"}.issubset(
+        ffi_dependencies
+    ):
+        failures.append("agentry-ffi must depend on proto/agent_session_log/runtime/uniffi")
     for package, dependencies in product_dependencies.items():
         uniffi_dependencies = {name for name in dependencies if name.startswith("uniffi")}
         if package == "agentry-ffi":

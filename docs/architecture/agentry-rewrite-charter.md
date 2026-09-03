@@ -707,7 +707,7 @@ Rust-enabled 产品只支持 Apple Silicon。权威流程为：
 - 单进程 crash budget 无法接受且 `catch_unwind`/重建不足；
 - 安全边界明确要求不同 entitlement/sandbox。
 
-优先只隔离问题域，而不是把整个 core 预先改为 daemon。外部进程协议必须使用项目自有 schema，不复用 UniFFI 内部格式。
+优先只隔离问题域，而不是把整个 core 预先改为 daemon。外部进程协议必须使用项目自有 schema，不复用 UniFFI 内部格式。ADR-0011 P8 只额外隔离 Agent 会话执行加上 GUI 缺席时的 workspace **authority lease**（供 agent 工具 mutation）；inventory/search 仍留在 GUI 进程内的 FFI 边界上。
 
 ## 15. 测试与分层接受门槛
 

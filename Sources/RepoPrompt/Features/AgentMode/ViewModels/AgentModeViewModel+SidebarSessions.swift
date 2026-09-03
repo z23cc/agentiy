@@ -577,6 +577,10 @@ extension AgentModeViewModel {
         archivedSessionsExpanded: Bool,
         showComposeTabsWithoutAgentSessions: Bool
     ) -> SidebarListProjection {
+        let attachableHostSessions = attachableHostSessions(
+            workspaceID: workspaceID,
+            composeTabs: composeTabs
+        )
         let key = SidebarListProjectionCacheKey(
             workspaceID: workspaceID,
             sidebarSnapshot: sidebarSnapshot,
@@ -584,7 +588,8 @@ extension AgentModeViewModel {
             composeTabMetadataSignatures: makeSessionSidebarTabMetadataSignatures(for: composeTabs),
             stashedTabSignatures: makeSessionSidebarStashedTabSignatures(for: stashedTabs),
             archivedSessionsExpanded: archivedSessionsExpanded,
-            showComposeTabsWithoutAgentSessions: showComposeTabsWithoutAgentSessions
+            showComposeTabsWithoutAgentSessions: showComposeTabsWithoutAgentSessions,
+            attachableHostSessionIDs: attachableHostSessions.map(\.sessionID)
         )
         if let cached = sidebarListProjectionCache, cached.key == key {
             return cached.projection
@@ -632,6 +637,7 @@ extension AgentModeViewModel {
             filteredSessions: filteredSessions,
             pagedSessions: pagedSessions,
             effectiveVisibleSessionCount: effectiveVisibleSessionCount,
+            attachableHostSessions: attachableHostSessions,
             archivedSessionTabsForHeader: archivedSessionTabs.filteredTabs,
             pagedArchivedSessionTabsForRows: pagedArchivedTabs,
             archivedDateInfoByStashedTabID: archivedSessionTabs.dateInfoByStashedTabID,

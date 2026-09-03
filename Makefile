@@ -29,7 +29,7 @@ help:
 	@printf '  %-30s %s\n' 'dev-build' 'Coordinated debug app package build'
 	@printf '  %-30s %s\n' 'dev-swift-build' 'Coordinated Swift build; PRODUCT=Agentry|agentry-mcp|all'
 	@printf '  %-30s %s\n' 'dev-cargo-build' 'Coordinated Cargo workspace build; PROFILE=debug|release'
-	@printf '  %-30s %s\n' 'dev-cargo-test' 'Coordinated Cargo tests; CARGO_PACKAGE=proto|runtime|ffi|all'
+	@printf '  %-30s %s\n' 'dev-cargo-test' 'Coordinated Cargo tests; CARGO_PACKAGE=proto|session-log|runtime|ffi|all'
 	@printf '  %-30s %s\n' 'dev-cargo-codegen-check' 'Coordinated deterministic UniFFI generation check'
 	@printf '  %-30s %s\n' 'dev-cargo-archive' 'Coordinated staged static archive; PROFILE=debug|release'
 	@printf '  %-30s %s\n' 'dev-cargo-deny' 'Coordinated Cargo dependency/license policy check'
@@ -193,6 +193,7 @@ conductor-selftest:
 	python3 Scripts/test_conductor_lifecycle.py
 	python3 Scripts/test_local_production_installer.py
 	python3 Scripts/test_security_inventory.py
+	python3 Scripts/test_agent_session_boundary_guardrails.py
 
 ci-app-test-runner-selftest:
 	python3 Scripts/test_ci_app_test_runner.py

@@ -316,6 +316,18 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
         run: cargo fuzz run agent_command_v1 corpus/agent_command_v1 -- -max_total_time=60
 
+      - name: Fuzz agent-host-v1 wire frame decode for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run agent_host_frame_v1 corpus/agent_host_frame_v1 -- -max_total_time=60
+
+      - name: Fuzz agent session log header/record decode for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run agent_session_log_frame_v1 corpus/agent_session_log_frame_v1 -- -max_total_time=60
+
       - name: Test Rust bridge in debug configuration
         run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=debug
 
