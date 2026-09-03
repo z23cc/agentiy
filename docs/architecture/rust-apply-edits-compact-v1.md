@@ -1,6 +1,6 @@
 # Rust Apply Edits Compact Contract v1
 
-Status: draft for P2-3 implementation and differential validation.
+Status: Accepted (ADR-0013, Charter Phase 2; User ruling 2026-09-03).
 
 ## Purpose and authority boundary
 

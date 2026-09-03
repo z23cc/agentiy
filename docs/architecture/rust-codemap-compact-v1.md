@@ -1,6 +1,6 @@
 # Rust CodeMap Compact Contract v1
 
-Status: draft for P2-2 implementation and differential validation.
+Status: Accepted (ADR-0013, Charter Phase 2; User ruling 2026-09-03).
 
 > **Evidence update:** P2 step 13 deleted the legacy Swift extractor and `CodeMapRustSwiftDifferentialTests`. The current golden gate is `Tests/RepoPromptTests/CodeMap/CodeMapRustGoldenTests.swift` against `Tests/RepoPromptCodeMapCoreTests/Goldens`. `RepoPromptTests.CodeMapGoldenTests` covers fixture file-tree snapshot rendering only.
 
