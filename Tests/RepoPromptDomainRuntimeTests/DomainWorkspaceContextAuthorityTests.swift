@@ -2519,7 +2519,6 @@ private struct Fixture {
         if includeWorkspace {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try fixture.document(prompt: "saved").documentBytes.write(to: workspaceFile)
-            try fixture.writeLegacyIndex()
             try fixture.writeCanonicalRuntime()
         }
         return fixture

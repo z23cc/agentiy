@@ -78,13 +78,6 @@ struct AgentProviderHandleIdentity: Equatable {
     let acpControllerInstanceID: ObjectIdentifier?
 }
 
-/// Provider handles detached from a session during workspace-switch finalize, handed
-/// to the background cleanup task.
-struct InProcessDetachedProviderHandles {
-    let provider: HeadlessAgentProvider?
-    let acpController: ACPAgentSessionController?
-}
-
 @MainActor
 extension AgentTabSession {
     /// Execution-side state for this session, created on first use.

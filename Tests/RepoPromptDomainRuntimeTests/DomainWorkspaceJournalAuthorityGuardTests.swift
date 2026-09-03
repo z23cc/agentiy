@@ -46,22 +46,14 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             XCTAssertFalse(source.contains(forbidden), "Swift journal authority returned: \(forbidden)")
         }
         for required in [
-            "private func readRawJournalSnapshot(",
-            "validator.validateSynchronously(",
-            "validator.seedWorkingJournal(",
-            "validator.resolvePendingSave(",
-            "deletionSidecarDiagnostic(",
-            "validator.validateSavedRevision(",
-            "validator.requireRuntimeAvailability()",
-            "private func readSavedRevisionSnapshot(",
             "if isJournalInfrastructureFailure(error)"
         ] {
             XCTAssertTrue(source.contains(required), "Missing Rust journal boundary: \(required)")
         }
         XCTAssertEqual(
             source.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            1,
-            "Only typed Rust seed adapters may materialize missing production journals"
+            0,
+            "Swift DomainPersistence must perform zero journal seeding (Rust is sole canonical writer)"
         )
         XCTAssertFalse(source.contains("private func executeJournalMutationTransaction("))
     }
@@ -100,7 +92,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         XCTAssertEqual(
             persistence.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            1,
+            0,
             "Only typed Rust seed adapters may materialize missing production journals"
         )
     }
@@ -271,27 +263,6 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             1,
             "Only shared load/migration may invoke the dedicated Rust catalog seed endpoint"
         )
-        XCTAssertTrue(
-            source.contains("let catalogSnapshot = try loadCurrentCatalog("),
-            "Migration must reuse the guarded Rust catalog seed path"
-        )
-        XCTAssertTrue(
-            source.contains("now: Date(timeIntervalSinceReferenceDate: 0)"),
-            "Catalog-absent migration must persist one process-independent seed identity"
-        )
-        let migrationStart = try XCTUnwrap(source.range(of: "private func ensureLazyMigration("))
-        let lockHelperStart = try XCTUnwrap(source.range(
-            of: "private struct DomainPersistenceAtomicWriteReceipt",
-            range: migrationStart.lowerBound ..< source.endIndex
-        ))
-        let migration = source[migrationStart.lowerBound ..< lockHelperStart.lowerBound]
-        let migrationCatalogLock = try XCTUnwrap(migration.range(
-            of: "withLock(at: lockDirectory.appendingPathComponent(\"workspace-catalog.lock\"))"
-        ))
-        let migrationCatalogLoad = try XCTUnwrap(migration.range(
-            of: "let catalogSnapshot = try loadCurrentCatalog("
-        ))
-        XCTAssertLessThan(migrationCatalogLock.lowerBound, migrationCatalogLoad.lowerBound)
 
         let authorityURL = repositoryRoot()
             .appendingPathComponent("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")

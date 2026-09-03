@@ -25,7 +25,6 @@ struct WorkspaceSwitchSessionCleanupTarget {
     /// Distinct run IDs needing MCP run-routing cleanup: the run captured at
     /// prepare time plus any successor run present at finalize time.
     let runIDs: [UUID]
-    let detachedProviderHandles: InProcessDetachedProviderHandles
     let detachedClaude: ClaudeAgentModeCoordinator.DetachedClaudeController?
     let detachedCodex: CodexAgentModeCoordinator.DetachedCodexController?
 }
@@ -164,13 +163,6 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
         codexCoordinator: CodexAgentModeCoordinator,
         claudeCoordinator: ClaudeAgentModeCoordinator
     ) async {
-        if let provider = target.detachedProviderHandles.provider {
-            await provider.dispose()
-        }
-        if let acpController = target.detachedProviderHandles.acpController {
-            await acpController.cancelPrompt()
-            await acpController.shutdown()
-        }
         if let detachedCodex = target.detachedCodex {
             await codexCoordinator.retireDetachedControllerForWorkspaceSwitch(detachedCodex)
         }

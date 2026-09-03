@@ -657,6 +657,7 @@ extension AgentModeRunServiceLifecycleTests {
             recorder.events,
             [
                 "no-vm:start",
+                "no-vm:interrupt:interrupt",
                 "host:prepend",
                 "no-vm:send",
                 "host:refresh:true",

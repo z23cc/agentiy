@@ -1826,10 +1826,9 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         let serverEnabler: AgentModeViewModel.MCPServerEnabler = { true }
         // The test harness is the composition root for this view model, so it picks the
         // concrete seam implementation the same way `WindowStateComposition` does.
-        let sessionExecutor = InProcessAgentSessionExecutor()
         let host = AgentModeViewModel(
             testWindowID: 1,
-            testSessionConnection: InProcessAgentSessionConnection(executor: sessionExecutor),
+            testSessionConnection: TestMockAgentSessionConnection(),
             testWorkspacePath: FileManager.default.currentDirectoryPath,
             codexControllerFactory: { _, _, _, _, _, _ in codexController },
             claudeControllerFactory: claudeControllerFactory ?? { _, _, _, _ in
@@ -1842,7 +1841,6 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             connectionPolicyInstaller: policyInstaller,
             mcpServerEnabler: serverEnabler
         )
-        sessionExecutor.attach(viewModel: host)
         lifecycleHosts.append(host)
         let dependencies = AgentModeRunService.Dependencies(
             windowID: 1,
@@ -2789,5 +2787,69 @@ private struct LifecycleFakeACPProvider: ACPAgentProvider {
 
     func normalizeError(_ error: Error) -> Error {
         error
+    }
+}
+
+private actor TestMockAgentSessionConnection: AgentSessionConnection {
+    let events: AsyncStream<AgentSessionConnectionEvent>
+
+    init() {
+        events = AsyncStream { $0.finish() }
+    }
+
+    func attach(sessionID: UUID, resume: AgentSessionCursor?) async throws -> AgentSessionAttachResult {
+        throw AgentSessionConnectionError.sessionNotFound(sessionID)
+    }
+
+    func detach(sessionID: UUID) async {}
+
+    func start(_ spec: AgentSessionStartSpec, operationID: UUID) async throws -> AgentSessionStartResult {
+        AgentSessionStartResult(
+            sessionID: spec.resumeSessionID ?? UUID(),
+            sendOutcome: .accepted,
+            cursor: AgentSessionCursor(generation: Data(), deliveryCursor: 0)
+        )
+    }
+
+    func steer(sessionID: UUID, message: AgentSessionUserMessage, operationID: UUID) async throws -> AgentSessionSteerResult {
+        AgentSessionSteerResult(
+            sessionID: sessionID,
+            messageID: UUID(),
+            sendOutcome: .accepted,
+            recordedCursor: AgentSessionCursor(generation: Data(), deliveryCursor: 0)
+        )
+    }
+
+    func interrupt(sessionID: UUID, reason: AgentSessionInterruptReason, operationID: UUID) async throws -> AgentSessionInterruptResult {
+        AgentSessionInterruptResult(
+            sessionID: sessionID,
+            outcome: .acknowledged,
+            detail: nil
+        )
+    }
+
+    func respond(sessionID: UUID, interactionID: UUID, answer: AgentInteractionAnswer, operationID: UUID) async throws -> AgentSessionRespondResult {
+        AgentSessionRespondResult(
+            sessionID: sessionID,
+            interactionID: interactionID,
+            disposition: .accepted
+        )
+    }
+
+    func stop(sessionID: UUID, reason: AgentSessionStopReason, operationID: UUID) async throws -> AgentSessionStopResult {
+        AgentSessionStopResult(
+            sessionID: sessionID,
+            status: .completed
+        )
+    }
+
+    func detachAll() async {}
+
+    func prepareHostUpdate() async throws -> AgentSessionPrepareUpdateResult {
+        AgentSessionPrepareUpdateResult(allCheckpointed: true, detail: "ok")
+    }
+
+    func listSessions(includeTerminal: Bool, workspaceID: UUID?) async throws -> [AgentSessionListedSummary] {
+        []
     }
 }

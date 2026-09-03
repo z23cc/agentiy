@@ -1077,6 +1077,18 @@ final class AgentModeRunService {
         }
     }
 
+    func teardownACPControllerIfPresent(for session: AgentTabSession) async {
+        session.acpSteeringFlushTask?.cancel()
+        session.acpSteeringFlushTask = nil
+        session.pendingACPSteeringInstructions.removeAll()
+        let execution = session.inProcessExecution
+        guard let controller = execution.acpController else { return }
+        execution.acpController = nil
+        AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+        await controller.cancelPrompt()
+        await controller.shutdown()
+    }
+
     private func cancelToolsBeforeStoppingProvider(
         session: AgentTabSession,
         reason: String

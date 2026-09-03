@@ -2221,14 +2221,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
-    private func saveWorkspaceIndex(_ entries: [WorkspaceIndexEntry]) throws {
-        // Retired per ADR-0012: Rust workspace catalog is the sole canonical index
-    }
-
-    private func saveWorkspaceIndexAsync(_ entries: [WorkspaceIndexEntry]) async throws {
-        // Retired per ADR-0012: Rust workspace catalog is the sole canonical index
-    }
-
     /// Reloads the workspace list from disk, preserving the active workspace
     func reloadWorkspacesFromDisk() {
         if let domainWorkspaceAuthorityClient {
@@ -2496,14 +2488,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
-    private func rebuildAndSaveIndex() {
-        // Retired per ADR-0012: Rust workspace catalog is the sole canonical catalog.
-    }
-
-    private func rebuildAndSaveIndexAsync() async {
-        // Retired per ADR-0012: Rust workspace catalog is the sole canonical catalog.
-    }
-
     // MARK: - DRAFT
 
     func createWorkspaceFromDraft() -> WorkspaceModel? {
@@ -2586,8 +2570,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                     let finalURL = try await saveWorkspaceToFileAsync(newWorkspace, preserveDiskRepoPathsIfUnchangedSinceBaseline: false, source: .createWorkspace)
                     await WorkspaceDiskWriter.shared.flush(url: finalURL)
                     await MainActor.run { self.recordRepoPathBaseline(for: newWorkspace) }
-
-                    await rebuildAndSaveIndexAsync()
 
                     // Notify other windows after disk commits
                     await MainActor.run {
@@ -6794,7 +6776,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         if groupsConsolidated > 0 {
-            await rebuildAndSaveIndexAsync()
             for window in windowStates.allWindows {
                 window.workspaceManager.reloadWorkspacesFromDisk()
             }
@@ -7357,9 +7338,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
             }.value
         }
-        if saveLegacyIndex {
-            await rebuildAndSaveIndexAsync()
-        }
         NotificationCenter.default.post(
             name: .workspaceListDidChange,
             object: nil,
@@ -7419,8 +7397,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let finalURL = try await saveWorkspaceToFileAsync(workspaceToSave, source: .renameWorkspace)
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
 
-                await rebuildAndSaveIndexAsync()
-
                 await MainActor.run {
                     NotificationCenter.default.post(
                         name: .workspaceListDidChange,
@@ -7463,8 +7439,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let finalURL = try await saveWorkspaceToFileAsync(workspaceToSave, source: .setWorkspaceHidden)
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
 
-                await rebuildAndSaveIndexAsync()
-
                 await MainActor.run {
                     NotificationCenter.default.post(
                         name: .workspaceListDidChange,
@@ -7492,8 +7466,6 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         let finalURL = try await saveWorkspaceToFileAsync(updated, source: .setWorkspaceHiddenFromSnapshot)
         await WorkspaceDiskWriter.shared.flush(url: finalURL)
-
-        await rebuildAndSaveIndexAsync()
 
         NotificationCenter.default.post(
             name: .workspaceListDidChange,
@@ -8986,9 +8958,6 @@ class WorkspaceManagerViewModel: ObservableObject {
             WorkspaceFileDecodeCache.shared.invalidate(url: fileURL)
             await WorkspaceDiskWriter.shared.enqueueWorkspace(data: data, url: fileURL, metadata: metadata)
 
-            if indexFieldsChanged, workspaceIndex(for: workspaceID) != nil {
-                await rebuildAndSaveIndexAsync()
-            }
             return capturedStateVersion
         } catch {
             print("💾 Failed to serialize workspace: \(error)")
@@ -9446,11 +9415,6 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
         }
         globalCustomStorageURL = nil
-
-        // Schedule async index save
-        Task {
-            await rebuildAndSaveIndexAsync()
-        }
     }
 
     private func moveFolderContents(from oldFolder: URL, to newFolder: URL) throws {
@@ -9485,11 +9449,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         globalCustomStorageURL = newURL
-
-        // Schedule async index save
-        Task {
-            await rebuildAndSaveIndexAsync()
-        }
     }
 
     @MainActor
@@ -9740,7 +9699,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let finalURL = try await saveWorkspaceToFileAsync(workspaceToSave, preserveDiskRepoPathsIfUnchangedSinceBaseline: false, source: .rootAdd)
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
                 recordRepoPathBaseline(for: workspaceToSave)
-                await rebuildAndSaveIndexAsync()
                 postWorkspaceRepoPathsDidChange(for: workspaceToSave.id)
             } catch {
                 print("Error saving workspace after adding folder: \(error)")
@@ -10578,8 +10536,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         //    or you can union them if you want to keep older existing ones.
         workspaces = newlyLoadedWorkspaces
 
-        // Rebuild and save the index to reflect the newly loaded sets
-        await rebuildAndSaveIndexAsync()
         print("Finished restoring and reloading workspace list from backup.")
 
         // Notify that workspace list has changed

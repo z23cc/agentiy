@@ -191,6 +191,8 @@ struct AgentSessionUserMessage: Equatable {
 /// so `HostAgentSessionConnection` ignores it.
 protocol AgentSessionStartExecutionContext {}
 
+extension AgentTabSession.CodexFallbackSubmissionContext: AgentSessionStartExecutionContext {}
+
 /// Everything the connection needs to start a run.
 ///
 /// P1 note: in-process execution is still tab-addressed, so the spec names the tab whose

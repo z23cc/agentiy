@@ -3411,7 +3411,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                                 completion: .terminalTeardownCompleted
                             )
                         }
-                        await session.disposeProviderIfPresent()
                         await codexCoordinator.shutdownCodexSession(session)
                         let sessionID = boundSessionID(for: session.tabID)
                         await cleanupMCPRunRoutingIfPresent(
@@ -3433,7 +3432,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private static func sessionOwnsCodexRuntimeState(_ session: TabSession) -> Bool {
         session.selectedAgent == .codexExec
-            || session.hasLiveCodexController
             || session.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             || session.codexRolloutPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
@@ -7089,8 +7087,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
               invocation.provider == .codexExec,
               invocation.sessionID == session.activeAgentSessionID,
               invocation.runID == session.runID,
-              session.selectedAgent == .codexExec,
-              session.hasLiveCodexController
+              session.selectedAgent == .codexExec
         else {
             return false
         }
@@ -7098,9 +7095,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     private func invalidateProviderContextForExecutionLocationChange(_ session: TabSession) async {
-        await session.disposeProviderIfPresent()
-        await session.shutdownACPControllerIfPresent()
-        if session.hasLiveCodexController || session.codexConversationID != nil || session.codexRolloutPath != nil || session.selectedAgent == .codexExec {
+        if session.codexConversationID != nil || session.codexRolloutPath != nil || session.selectedAgent == .codexExec {
             await codexCoordinator.shutdownCodexSession(session)
             codexCoordinator.clearCodexSessionState(session)
         }
@@ -8185,7 +8180,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let registration: AgentRunSessionStore.Registration
         let runID: UUID?
         let runAttemptID: UUID?
-        let providerHandleIdentity: AgentProviderHandleIdentity
     }
 
     private func mcpActiveDispatchWakeIdentity(
@@ -8201,8 +8195,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             activationID: context.activationID,
             registration: context.registration,
             runID: session.runID,
-            runAttemptID: session.activeRunAttemptID,
-            providerHandleIdentity: session.providerHandleIdentity
+            runAttemptID: session.activeRunAttemptID
         )
     }
 
@@ -8219,7 +8212,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             && context.registration == identity.registration
             && session.runID == identity.runID
             && session.activeRunAttemptID == identity.runAttemptID
-            && session.providerHandleIdentity == identity.providerHandleIdentity
     }
 
     private func mcpActiveInstructionDispatchPlan(for session: TabSession) -> MCPActiveInstructionDispatchPlan {
@@ -11727,7 +11719,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             session,
             runIDs: runIDs
         )
-        let detachedProviderHandles = session.detachProviderHandlesForWorkspaceSwitch()
+        session.acpSteeringFlushTask?.cancel()
+        session.acpSteeringFlushTask = nil
+        session.pendingACPSteeringInstructions.removeAll()
         // Workspace switch is context-terminal for the discarded session: force
         // semantics are correct here, and this slice is provably pre-successor.
         AgentModeProcessRunIdentity.clearProcessRunID(for: session)
@@ -11736,7 +11730,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             session: session,
             boundSessionID: context.boundSessionID,
             runIDs: runIDs,
-            detachedProviderHandles: detachedProviderHandles,
             detachedClaude: detachedClaude,
             detachedCodex: detachedCodex
         )
@@ -14481,8 +14474,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
               session.pendingPermissionsRequest == nil,
               attachments.isEmpty,
               session.runID != nil,
-              session.activeRunAttemptID != nil,
-              session.hasLiveACPController
+              session.activeRunAttemptID != nil
         else {
             return false
         }
@@ -14540,7 +14532,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 let queued = session.pendingACPSteeringInstructions.remove(at: queuedIndex)
                 if session.runState.isActive {
                     session.pendingInstructions.insert(queued.providerText, at: 0)
-                } else if session.runState == .completed, session.hasLiveACPController {
+                } else if session.runState == .completed {
                     await startAgentRun(tabID: session.tabID, initialMessage: queued.providerText)
                 } else {
                     // ACP steering should never bounce back into the composer. If the
@@ -15908,7 +15900,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             // seam; provider handles prepared ahead of a first run are still released the
             // way this path always did.
             await cleanupACPStateForDeletedSession(session)
-            await session.disposeProviderIfPresent()
             await codexCoordinator.shutdownCodexSession(session)
             await claudeCoordinator.shutdownClaudeSession(session)
             return
@@ -18171,7 +18162,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     private func cleanupACPStateForDeletedSession(_ session: TabSession) async {
-        await session.teardownACPControllerIfPresent()
+        await runService.teardownACPControllerIfPresent(for: session)
     }
 
     struct DeletedAgentSessionCleanupResult: Equatable {
@@ -18192,11 +18183,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         )
         guard let handle else { return nil }
 
-        let outcome: ProviderConversationCleanupOutcome = if let liveOutcome = await session.cleanupProviderConversationThroughLiveHandle(handle, action: action) {
-            liveOutcome
-        } else {
-            await providerConversationCleanupRegistry.cleanup(handle, action: action)
-        }
+        let outcome = await providerConversationCleanupRegistry.cleanup(handle, action: action)
         logProviderConversationCleanupOutcome(outcome, action: action, handle: handle)
         return outcome
     }
@@ -18326,7 +18313,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             await cleanupACPStateForDeletedSession(session)
             await teardownMCPControl(for: session, cleanupSessionStore: true)
             await cleanupProviderConversationForDeletedAgentSession(session)
-            await session.disposeProviderIfPresent()
             await codexCoordinator.shutdownCodexSession(session)
             await claudeCoordinator.shutdownClaudeSession(session)
             await cleanupMCPRunRoutingIfPresent(
@@ -18425,7 +18411,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             await cleanupACPStateForDeletedSession(session)
             await teardownMCPControl(for: session, cleanupSessionStore: true)
             providerCleanupOutcome = await cleanupProviderConversationForDeletedAgentSession(session)
-            await session.disposeProviderIfPresent()
             await codexCoordinator.shutdownCodexSession(session)
             await claudeCoordinator.shutdownClaudeSession(session)
         }
