@@ -2222,17 +2222,11 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private func saveWorkspaceIndex(_ entries: [WorkspaceIndexEntry]) throws {
-        guard domainWorkspaceAuthorityClient == nil else { return }
-        try ensureBaseRootExists(at: currentBaseRoot)
-        let data = try JSONEncoder().encode(entries)
-        try data.write(to: workspaceIndexFileURL, options: .atomic)
+        // Retired per ADR-0012: Rust workspace catalog is the sole canonical index
     }
 
     private func saveWorkspaceIndexAsync(_ entries: [WorkspaceIndexEntry]) async throws {
-        guard domainWorkspaceAuthorityClient == nil else { return }
-        try ensureBaseRootExists(at: currentBaseRoot)
-        let data = try JSONEncoder().encode(entries)
-        await WorkspaceDiskWriter.shared.enqueue(data: data, url: workspaceIndexFileURL)
+        // Retired per ADR-0012: Rust workspace catalog is the sole canonical index
     }
 
     /// Reloads the workspace list from disk, preserving the active workspace
@@ -2502,45 +2496,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
-    /// Legacy synchronous version - only used during initialization
     private func rebuildAndSaveIndex() {
-        // Exclude ephemeral workspaces from the index
-        let entries: [WorkspaceIndexEntry] = workspaces
-            .filter { !$0.isEphemeral }
-            .map {
-                WorkspaceIndexEntry(
-                    id: $0.id,
-                    name: $0.name,
-                    customStoragePath: $0.customStoragePath,
-                    isSystemWorkspace: $0.isSystemWorkspace,
-                    isHiddenInMenus: $0.isHiddenInMenus
-                )
-            }
-        do {
-            try saveWorkspaceIndex(entries)
-        } catch {
-            print("Error saving index: \(error)")
-        }
+        // Retired per ADR-0012: Rust workspace catalog is the sole canonical catalog.
     }
 
     private func rebuildAndSaveIndexAsync() async {
-        // Exclude ephemeral workspaces from the index
-        let entries: [WorkspaceIndexEntry] = workspaces
-            .filter { !$0.isEphemeral }
-            .map {
-                WorkspaceIndexEntry(
-                    id: $0.id,
-                    name: $0.name,
-                    customStoragePath: $0.customStoragePath,
-                    isSystemWorkspace: $0.isSystemWorkspace,
-                    isHiddenInMenus: $0.isHiddenInMenus
-                )
-            }
-        do {
-            try await saveWorkspaceIndexAsync(entries)
-        } catch {
-            print("Error saving index: \(error)")
-        }
+        // Retired per ADR-0012: Rust workspace catalog is the sole canonical catalog.
     }
 
     // MARK: - DRAFT
@@ -2627,7 +2588,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                     await MainActor.run { self.recordRepoPathBaseline(for: newWorkspace) }
 
                     await rebuildAndSaveIndexAsync()
-                    await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
 
                     // Notify other windows after disk commits
                     await MainActor.run {
@@ -2638,6 +2598,14 @@ class WorkspaceManagerViewModel: ObservableObject {
                         )
                     }
                 } catch {
+                    let dir = workspaceFileURL(for: newWorkspace).deletingLastPathComponent()
+                    if FileManager.default.fileExists(atPath: dir.path) {
+                        try? FileManager.default.removeItem(at: dir)
+                    }
+                    await MainActor.run {
+                        self.workspaces.removeAll { $0.id == newWorkspace.id }
+                        self.pendingCreatePersistenceTasks.removeValue(forKey: newWorkspace.id)
+                    }
                     if domainWorkspaceAuthorityClient != nil {
                         reportDomainAuthorityFailure(
                             error,
@@ -4459,8 +4427,6 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     private static func isSuccessfulDomainOutcome(_ outcome: DomainCommandOutcome) -> Bool {
         outcome.disposition == .applied
-            || outcome.disposition == .unchanged
-            || outcome.disposition == .deduplicated
     }
 
     func applyDomainWorkspaceProjection(
@@ -6829,7 +6795,6 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         if groupsConsolidated > 0 {
             await rebuildAndSaveIndexAsync()
-            await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
             for window in windowStates.allWindows {
                 window.workspaceManager.reloadWorkspacesFromDisk()
             }
@@ -7394,7 +7359,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         if saveLegacyIndex {
             await rebuildAndSaveIndexAsync()
-            await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
         }
         NotificationCenter.default.post(
             name: .workspaceListDidChange,
@@ -7456,7 +7420,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
 
                 await rebuildAndSaveIndexAsync()
-                await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
 
                 await MainActor.run {
                     NotificationCenter.default.post(
@@ -7501,7 +7464,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
 
                 await rebuildAndSaveIndexAsync()
-                await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
 
                 await MainActor.run {
                     NotificationCenter.default.post(
@@ -7532,7 +7494,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         await WorkspaceDiskWriter.shared.flush(url: finalURL)
 
         await rebuildAndSaveIndexAsync()
-        await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
 
         NotificationCenter.default.post(
             name: .workspaceListDidChange,
@@ -9780,7 +9741,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 await WorkspaceDiskWriter.shared.flush(url: finalURL)
                 recordRepoPathBaseline(for: workspaceToSave)
                 await rebuildAndSaveIndexAsync()
-                await WorkspaceDiskWriter.shared.flush(url: workspaceIndexFileURL)
                 postWorkspaceRepoPathsDidChange(for: workspaceToSave.id)
             } catch {
                 print("Error saving workspace after adding folder: \(error)")
@@ -9972,6 +9932,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                     self?.applyDomainAuthorityOutcome(outcome, workspaceID: ws.id)
                     if !Self.isSuccessfulDomainOutcome(outcome) {
                         self?.reportDomainAuthorityIssue(outcome, operation: "create_default")
+                        let dir = fileURL.deletingLastPathComponent()
+                        if FileManager.default.fileExists(atPath: dir.path) {
+                            try? FileManager.default.removeItem(at: dir)
+                        }
+                        self?.workspaces.removeAll { $0.id == ws.id }
                     }
                 } catch {
                     self?.reportDomainAuthorityFailure(
@@ -9979,6 +9944,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                         workspaceID: ws.id,
                         operation: "create_default"
                     )
+                    let dir = fileURL.deletingLastPathComponent()
+                    if FileManager.default.fileExists(atPath: dir.path) {
+                        try? FileManager.default.removeItem(at: dir)
+                    }
+                    self?.workspaces.removeAll { $0.id == ws.id }
                 }
             }
             return ws
@@ -9988,9 +9958,13 @@ class WorkspaceManagerViewModel: ObservableObject {
             _ = try ensureWorkspaceDirectoryExists(for: ws)
             _ = try saveWorkspaceToFile(ws, source: .createDefaultWorkspace)
         } catch {
+            let dir = workspaceFileURL(for: ws).deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: dir.path) {
+                try? FileManager.default.removeItem(at: dir)
+            }
+            workspaces.removeAll { $0.id == ws.id }
             Self.logger.error("Error while creating default workspace: \(error.localizedDescription, privacy: .public)")
         }
-        rebuildAndSaveIndex()
         return ws
     }
 

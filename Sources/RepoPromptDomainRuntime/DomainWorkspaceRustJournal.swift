@@ -1906,6 +1906,94 @@ enum DomainWorkspaceRustJournal {
             self.core = core
         }
 
+        func createWorkspaceDirect(
+            storageDirectory: String,
+            workspaceID: UUID,
+            workspaceName: String,
+            documentBytes: Data,
+            expectedCatalogRevision: UInt64,
+            operationID: UUID,
+            fingerprint: String?
+        ) throws -> CoreWorkspaceCommandResultV1 {
+            try core.createWorkspaceDirect(
+                storageDirectory: storageDirectory,
+                workspaceID: workspaceID,
+                workspaceName: workspaceName,
+                documentBytes: documentBytes,
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationID: operationID,
+                fingerprint: fingerprint
+            )
+        }
+
+        func saveWorkspaceDirect(
+            storageDirectory: String,
+            workspaceID: UUID,
+            documentBytes: Data,
+            expectedWorkingRevision: UInt64,
+            expectedCatalogRevision: UInt64,
+            operationID: UUID,
+            fingerprint: String?
+        ) throws -> CoreWorkspaceCommandResultV1 {
+            try core.saveWorkspaceDirect(
+                storageDirectory: storageDirectory,
+                workspaceID: workspaceID,
+                documentBytes: documentBytes,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationID: operationID,
+                fingerprint: fingerprint
+            )
+        }
+
+        func deleteWorkspaceDirect(
+            storageDirectory: String,
+            workspaceID: UUID,
+            expectedCatalogRevision: UInt64,
+            operationID: UUID
+        ) throws -> CoreWorkspaceCommandResultV1 {
+            try core.deleteWorkspaceDirect(
+                storageDirectory: storageDirectory,
+                workspaceID: workspaceID,
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationID: operationID
+            )
+        }
+
+        func mutateWorkingDirect(
+            storageDirectory: String,
+            workspaceID: UUID,
+            candidateDocumentBytes: Data,
+            expectedWorkingRevision: UInt64,
+            operationID: UUID
+        ) throws -> CoreWorkspaceCommandResultV1 {
+            try core.mutateWorkingDirect(
+                storageDirectory: storageDirectory,
+                workspaceID: workspaceID,
+                candidateDocumentBytes: candidateDocumentBytes,
+                expectedWorkingRevision: expectedWorkingRevision,
+                operationID: operationID
+            )
+        }
+
+        func isWorkspaceQuarantined(
+            storageDirectory: String,
+            workspaceID: UUID
+        ) throws -> (isQuarantined: Bool, reason: String?) {
+            try core.isWorkspaceQuarantined(
+                storageDirectory: storageDirectory,
+                workspaceID: workspaceID
+            )
+        }
+
+        func quarantinedWorkspaces(
+            storageDirectory: String
+        ) throws -> [(workspaceID: UUID, reason: String)] {
+            try core.quarantinedWorkspaces(
+                storageDirectory: storageDirectory
+            )
+        }
+
         func commandIdentity(
             _ envelope: DomainWorkspaceCommandEnvelope
         ) throws -> String {
@@ -3873,6 +3961,14 @@ enum DomainWorkspaceRustJournal {
                 return .admissionFullRecoveryRequired
             case .invalidTransaction:
                 return .writeFailed("workspace_save_transaction_invalid")
+            case .workspaceQuarantined:
+                return .journalCorruption("workspace_quarantined")
+            case .persistenceIoError:
+                return .writeFailed("persistence_io_error")
+            case .unsupportedCatalogSchemaVersion:
+                return .writeFailed("unsupported_catalog_schema_version")
+            case .storageLeaseRequired:
+                return .writeFailed("storage_lease_required")
             }
         }
     }

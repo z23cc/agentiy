@@ -254,3 +254,22 @@ AgentProviderCodexLifecycleV1.parseCommandExecutionRunningUpdate(string, string)
 AgentProviderCodexLifecycleV1.sanitizeCommandOutput(string) throws -> string
 AgentProviderCodexLifecycleV1.withCommandExecutionRunningStatus(string?, string?, string?) throws -> string
 AgentProviderCodexLifecycleV1.canonicalState() throws -> string
+
+# ADR-0012: workspace mutation authority and canonical persistence FFI surface
+# (docs/architecture/adr-0012-workspace-mutation-authority-persistence.md).
+# All exports are synchronous, bounded, typed Result APIs. No async exports, no foreign traits.
+# Direct atomic persistence (temp + fsync + rename) executed directly by Rust core.
+CoreRuntime.workspaceCreateDirectV1(CoreWorkspaceCreateDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1
+CoreRuntime.workspaceSaveDirectV1(CoreWorkspaceSaveDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1
+CoreRuntime.workspaceDeleteDirectV1(CoreWorkspaceDeleteDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1
+CoreRuntime.workspaceMutateWorkingDirectV1(CoreWorkspaceMutateWorkingDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1
+CoreRuntime.workspaceIsQuarantinedV1(CoreWorkspaceIsQuarantinedRequestV1) throws -> CoreWorkspaceIsQuarantinedResponseV1
+CoreRuntime.workspaceQuarantinedWorkspacesV1(CoreWorkspaceQuarantinedWorkspacesRequestV1) throws -> CoreWorkspaceQuarantinedWorkspacesResponseV1
+CorePreparedWorkspaceCommandAdmissionV1.isWorkspaceQuarantined(string) throws -> bool
+CorePreparedWorkspaceCommandAdmissionV1.quarantinedWorkspaces() throws -> sequence<string>
+CorePreparedWorkspaceCommandAdmissionV1.quarantineReason(string) throws -> string?
+CorePreparedWorkspaceCommandAdmissionV1.quarantineState() throws -> CoreWorkspaceQuarantineStateResponseV1
+CorePreparedWorkspaceCreateTransactionV1.commitDirect(string) throws -> CoreWorkspaceCreateDirectiveResponseV1
+CorePreparedWorkspaceSaveTransactionV1.commitDirect(string) throws -> CoreWorkspaceSaveDirectiveResponseV1
+CorePreparedWorkspaceDeleteTransactionV1.commitDirect(string) throws -> CoreWorkspaceDeleteDirectiveResponseV1
+CorePreparedWorkspaceJournalMutationTransactionV1.commitDirect(string) throws -> CoreWorkspaceJournalMutationDirectiveResponseV1

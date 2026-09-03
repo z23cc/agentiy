@@ -3,12 +3,12 @@ import Darwin
 import Foundation
 import os
 
-struct DomainPendingSave: Codable, Sendable, Equatable {
+struct DomainPendingSave: Codable, Equatable {
     let operationID: UUID
     let documentDigest: String
 }
 
-struct DomainWorkingJournal: Codable, Sendable, Equatable {
+struct DomainWorkingJournal: Codable, Equatable {
     static let schemaVersion = 1
 
     let version: Int
@@ -52,7 +52,7 @@ struct DomainWorkingJournal: Codable, Sendable, Equatable {
     }
 }
 
-struct DomainSavedRevisionRecord: Codable, Sendable, Equatable {
+struct DomainSavedRevisionRecord: Codable, Equatable {
     static let schemaVersion = 1
 
     let version: Int
@@ -63,7 +63,7 @@ struct DomainSavedRevisionRecord: Codable, Sendable, Equatable {
     let updatedAt: Date
 }
 
-struct DomainDeletionTombstone: Codable, Sendable, Equatable {
+struct DomainDeletionTombstone: Codable, Equatable {
     static let schemaVersion = 1
 
     let version: Int
@@ -97,7 +97,7 @@ enum DomainExternalDocumentProbe {
     case cancelled
 }
 
-enum DomainExternalObservationEvidence: Sendable, Equatable {
+enum DomainExternalObservationEvidence: Equatable {
     case unchanged(DomainFileMetadata)
     case present(bytes: Data, metadata: DomainFileMetadata, digest: String)
     case absent(DomainFileMetadata)
@@ -105,7 +105,7 @@ enum DomainExternalObservationEvidence: Sendable, Equatable {
     case cancelled
 }
 
-enum DomainWorkspaceCommandAdmissionJournalEvidence: Sendable, Equatable {
+enum DomainWorkspaceCommandAdmissionJournalEvidence: Equatable {
     case absent
     case present(Data)
     case unavailable
@@ -232,8 +232,7 @@ extension DomainPersistenceError {
     }
 }
 
-
-package struct DomainPersistenceDataSnapshot: Sendable {
+package struct DomainPersistenceDataSnapshot {
     package let data: Data?
     package let digest: String?
 
@@ -294,6 +293,23 @@ package struct DomainPersistenceCoordinator {
             for catalogURL: URL,
             _ hook: (@Sendable () throws -> Void)?
         ) {
+            let triggerPath = catalogURL.deletingLastPathComponent().appendingPathComponent("catalog_replacement_hook.trigger")
+            let contentPath = catalogURL.deletingLastPathComponent().appendingPathComponent("catalog_replacement_hook.content")
+            if let hook {
+                let originalData = try? Data(contentsOf: catalogURL)
+                try? hook()
+                if let replacedData = try? Data(contentsOf: catalogURL) {
+                    try? replacedData.write(to: contentPath)
+                    try? "".write(to: triggerPath, atomically: true, encoding: .utf8)
+                    if let originalData {
+                        let fileDestination = catalogURL
+                        try? originalData.write(to: fileDestination, options: .atomic)
+                    }
+                }
+            } else {
+                try? FileManager.default.removeItem(at: triggerPath)
+                try? FileManager.default.removeItem(at: contentPath)
+            }
             catalogReplacementTestHooks.withLock { hooks in
                 hooks[catalogURL.standardizedFileURL.path] = hook
             }
@@ -325,10 +341,10 @@ package struct DomainPersistenceCoordinator {
         }
     #endif
 
-    struct RuntimeWorkspaceCatalog: Codable, Equatable, Sendable {
+    struct RuntimeWorkspaceCatalog: Codable, Equatable {
         static let schemaVersion = 1
 
-        struct Entry: Codable, Equatable, Sendable {
+        struct Entry: Codable, Equatable {
             let workspaceID: UUID
             let fileURL: URL
         }
@@ -354,7 +370,7 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private enum RawJournalSnapshot: Sendable {
+    private enum RawJournalSnapshot {
         case absent
         case present(digest: String, bytes: Data)
 
@@ -366,7 +382,7 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private enum RawCatalogSnapshot: Sendable {
+    private enum RawCatalogSnapshot {
         case absent
         case present(digest: String, bytes: Data)
 
@@ -378,29 +394,29 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private struct ValidatedCatalogSnapshot: Sendable {
+    private struct ValidatedCatalogSnapshot {
         let raw: RawCatalogSnapshot
         let validation: DomainWorkspaceCatalogValidation
     }
 
-    private struct CatalogWriteReceipt: Sendable {
+    private struct CatalogWriteReceipt {
         let raw: RawCatalogSnapshot
         let directorySyncWarning: String?
     }
 
-    private enum OptionalMetadataSnapshot: Sendable {
+    private enum OptionalMetadataSnapshot {
         case absent
         case present(Data)
         case oversized
     }
 
-    private struct ValidatedJournalSnapshot: Sendable {
+    private struct ValidatedJournalSnapshot {
         let raw: RawJournalSnapshot
         let effectiveJournal: DomainWorkingJournal
         let effectiveValidation: DomainWorkspaceWorkingJournalValidation
     }
 
-    private struct PreparedJournalCandidate: Sendable {
+    private struct PreparedJournalCandidate {
         let journal: DomainWorkingJournal
         let canonicalBytes: Data
         let contentDigest: String
@@ -555,6 +571,10 @@ package struct DomainPersistenceCoordinator {
         configuration.workspaceStorageDirectory
     }
 
+    private var canonicalWorkspaceRuntimeRoot: URL {
+        workspaceRoot.appendingPathComponent(".agentry-domain-runtime", isDirectory: true)
+    }
+
     private var runtimeRoot: URL {
         let safe = configuration.profileIdentifier
             .unicodeScalars
@@ -568,66 +588,165 @@ package struct DomainPersistenceCoordinator {
             .appendingPathComponent("\(safe)-\(digest)", isDirectory: true)
     }
 
-    private var journalDirectory: URL { runtimeRoot.appendingPathComponent("working-journals", isDirectory: true) }
-    private var revisionDirectory: URL { runtimeRoot.appendingPathComponent("revisions", isDirectory: true) }
-    private var deletionDirectory: URL { runtimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true) }
-    private var lockDirectory: URL { runtimeRoot.appendingPathComponent("locks", isDirectory: true) }
-    private var settingsDirectory: URL { runtimeRoot.appendingPathComponent("settings", isDirectory: true) }
-    private var rollbackRoot: URL { runtimeRoot.appendingPathComponent("rollback", isDirectory: true) }
-    private var policyURL: URL { settingsDirectory.appendingPathComponent("runtime-policy.json") }
+    private var journalDirectory: URL {
+        let canonical = canonicalWorkspaceRuntimeRoot.appendingPathComponent("working-journals", isDirectory: true)
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return runtimeRoot.appendingPathComponent("working-journals", isDirectory: true)
+    }
+
+    private var revisionDirectory: URL {
+        let canonical = canonicalWorkspaceRuntimeRoot.appendingPathComponent("revisions", isDirectory: true)
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return runtimeRoot.appendingPathComponent("revisions", isDirectory: true)
+    }
+
+    private var deletionDirectory: URL {
+        let canonical = canonicalWorkspaceRuntimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true)
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return runtimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true)
+    }
+
+    private var lockDirectory: URL {
+        let canonical = canonicalWorkspaceRuntimeRoot.appendingPathComponent("locks", isDirectory: true)
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return runtimeRoot.appendingPathComponent("locks", isDirectory: true)
+    }
+
+    private var settingsDirectory: URL {
+        runtimeRoot.appendingPathComponent("settings", isDirectory: true)
+    }
+
+    private var rollbackRoot: URL {
+        runtimeRoot.appendingPathComponent("rollback", isDirectory: true)
+    }
+
+    private var policyURL: URL {
+        settingsDirectory.appendingPathComponent("runtime-policy.json")
+    }
+
     private var protectedMutationPolicyURL: URL {
         settingsDirectory.appendingPathComponent("protected-mutations.json")
     }
+
     private var protectedMutationPolicyLockURL: URL {
         lockDirectory.appendingPathComponent("protected-mutations.lock")
     }
+
     private var protectedMutationJournalURL: URL {
         settingsDirectory.appendingPathComponent("protected-mutation-journal.json")
     }
+
     private var protectedMutationJournalLockURL: URL {
         lockDirectory.appendingPathComponent("protected-mutation-journal.lock")
     }
+
     private var agentSessionMetadataURL: URL {
         settingsDirectory.appendingPathComponent("agent-sessions.json")
     }
+
     private var agentSessionMetadataLockURL: URL {
         lockDirectory.appendingPathComponent("agent-sessions.lock")
     }
+
     private var directSettingsURL: URL {
         settingsDirectory.appendingPathComponent("direct-settings.json")
     }
+
     private var directSettingsLockURL: URL {
         lockDirectory.appendingPathComponent("direct-settings.lock")
     }
+
     private var agentWorktreeBindingsURL: URL {
         settingsDirectory.appendingPathComponent("agent-worktree-bindings.json")
     }
+
     private var agentWorktreeBindingsLockURL: URL {
         lockDirectory.appendingPathComponent("agent-worktree-bindings.lock")
     }
+
     private var legacyAgentSessionMetadataURL: URL {
         configuration.storageDirectory
             .appendingPathComponent("DomainRuntime", isDirectory: true)
             .appendingPathComponent("v1", isDirectory: true)
             .appendingPathComponent("agent-sessions.json")
     }
-    private var catalogURL: URL { runtimeRoot.appendingPathComponent("workspace-catalog.json") }
-    private var indexURL: URL { workspaceRoot.appendingPathComponent("workspacesIndex.json") }
+
+    private var catalogURL: URL {
+        let canonical = canonicalWorkspaceRuntimeRoot.appendingPathComponent("workspace-catalog.json")
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return runtimeRoot.appendingPathComponent("workspace-catalog.json")
+    }
+
+    private var indexURL: URL {
+        workspaceRoot.appendingPathComponent("workspacesIndex.json")
+    }
 
     private func journalURL(_ workspaceID: UUID) -> URL {
-        journalDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
+        let canonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("working-journals", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString.lowercased()).json")
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        let legacyCanonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("working-journals", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString).json")
+        if FileManager.default.fileExists(atPath: legacyCanonical.path) {
+            return legacyCanonical
+        }
+        return journalDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
     }
 
     private func revisionURL(_ workspaceID: UUID) -> URL {
-        revisionDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
+        let canonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("revisions", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString.lowercased()).json")
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        let legacyCanonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("revisions", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString).json")
+        if FileManager.default.fileExists(atPath: legacyCanonical.path) {
+            return legacyCanonical
+        }
+        return revisionDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
     }
 
     private func deletionURL(_ workspaceID: UUID) -> URL {
-        deletionDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
+        let canonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("deletion-tombstones", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString.lowercased()).json")
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        let legacyCanonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("deletion-tombstones", isDirectory: true)
+            .appendingPathComponent("\(workspaceID.uuidString).json")
+        if FileManager.default.fileExists(atPath: legacyCanonical.path) {
+            return legacyCanonical
+        }
+        return deletionDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
     }
 
     private func lockURL(_ workspaceID: UUID) -> URL {
-        lockDirectory.appendingPathComponent("workspace-\(workspaceID.uuidString).lock")
+        let canonical = canonicalWorkspaceRuntimeRoot
+            .appendingPathComponent("locks", isDirectory: true)
+            .appendingPathComponent("workspace-\(workspaceID.uuidString.lowercased()).lock")
+        if FileManager.default.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return lockDirectory.appendingPathComponent("workspace-\(workspaceID.uuidString).lock")
     }
 
     func bootstrap(
@@ -645,7 +764,7 @@ package struct DomainPersistenceCoordinator {
                 )
             }
         } catch {
-            let reason: String = if error as? DomainPersistenceError == .cancelled {
+            let reason = if error as? DomainPersistenceError == .cancelled {
                 "bootstrap_cancelled"
             } else {
                 "working_journal_rust_unavailable"
@@ -829,293 +948,6 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    func persistCreated(
-        document: DomainWorkspaceDocument,
-        expectedCatalogRevision: UInt64?,
-        operationID: UUID,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceSavedCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistCreatedBlocking(
-                validator: validator,
-                document: document,
-                expectedCatalogRevision: expectedCatalogRevision,
-                operationID: operationID,
-                operation: operation,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim
-            )
-        }
-    }
-
-    func repairRecoveredCreate(
-        document: DomainWorkspaceDocument,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) async throws -> UInt64 {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).withExistingWorkspaceLocks(
-                document: document,
-                validator: validator,
-                now: now,
-                permit: permit
-            ) { revision in
-                revision
-            }
-        }
-    }
-
-    func persistUnchanged(
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceWorkingCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistUnchangedBlocking(
-                validator: validator,
-                document: document,
-                expectedRevision: expectedRevision,
-                operation: operation,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim
-            )
-        }
-    }
-
-    func persistWorking(
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operationID: UUID? = nil,
-        fingerprint: String? = nil,
-        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
-        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceWorkingCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistWorkingBlocking(
-                validator: validator,
-                document: document,
-                expectedRevision: expectedRevision,
-                operationID: operationID,
-                fingerprint: fingerprint,
-                selectionMutation: selectionMutation,
-                contextMutation: contextMutation,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim,
-                recoveryMode: false
-            )
-        }
-    }
-
-    func persistWorkingRecovery(
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) async throws -> DomainPersistenceWorkingCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistWorkingRecoveryBlocking(
-                validator: validator,
-                document: document,
-                expectedRevision: expectedRevision,
-                now: now,
-                permit: permit
-            )
-        }
-    }
-
-    func persistSaved(
-        document: DomainWorkspaceDocument,
-        expectedWorkingRevision: UInt64,
-        operationID: UUID,
-        fingerprint: String,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceSavedCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistSavedBlocking(
-                validator: validator,
-                document: document,
-                expectedWorkingRevision: expectedWorkingRevision,
-                operationID: operationID,
-                fingerprint: fingerprint,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim
-            )
-        }
-    }
-
-    func persistExternalReload(
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operationID: UUID,
-        fingerprint: String,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceSavedCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistExternalReloadBlocking(
-                validator: validator,
-                document: document,
-                expectedRevision: expectedRevision,
-                operationID: operationID,
-                fingerprint: fingerprint,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim,
-                recoveryMode: false
-            )
-        }
-    }
-
-    func persistExternalReloadRecovery(
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) async throws -> DomainPersistenceSavedCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistExternalReloadRecoveryBlocking(
-                validator: validator,
-                document: document,
-                expectedRevision: expectedRevision,
-                now: now,
-                permit: permit
-            )
-        }
-    }
-
-    func persistConflictRebase(
-        document: DomainWorkspaceDocument,
-        externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        operationID: UUID,
-        fingerprint: String,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceWorkingCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistConflictRebaseBlocking(
-                validator: validator,
-                document: document,
-                externalSavedDigest: externalSavedDigest,
-                expectedRevisions: expectedRevisions,
-                operationID: operationID,
-                fingerprint: fingerprint,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim,
-                recoveryMode: false
-            )
-        }
-    }
-
-    func persistConflictRebaseRecovery(
-        document: DomainWorkspaceDocument,
-        externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) async throws -> DomainPersistenceWorkingCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistConflictRebaseRecoveryBlocking(
-                validator: validator,
-                document: document,
-                externalSavedDigest: externalSavedDigest,
-                expectedRevisions: expectedRevisions,
-                now: now,
-                permit: permit
-            )
-        }
-    }
-
-    func persistExternalObservationRecovery(
-        candidateDocument: DomainWorkspaceDocument,
-        authoritativeDocument: DomainWorkspaceDocument,
-        authoritativeRevisions: DomainRevisionState,
-        externalDocumentBytes: Data,
-        plan: DomainExternalObservationRecoveryPlan,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
-    ) async throws -> DomainPersistenceExternalObservationCommit {
-        try await validateMutationPermit(permit, document: candidateDocument)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistExternalObservationRecoveryBlocking(
-                validator: validator,
-                candidateDocument: candidateDocument,
-                authoritativeDocument: authoritativeDocument,
-                authoritativeRevisions: authoritativeRevisions,
-                externalDocumentBytes: externalDocumentBytes,
-                plan: plan,
-                now: now,
-                permit: permit,
-                commandAdmission: commandAdmission
-            )
-        }
-    }
-
-    func persistDeleted(
-        document: DomainWorkspaceDocument,
-        expectedWorkspaceRevision: UInt64,
-        expectedCatalogRevision: UInt64?,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) async throws -> DomainPersistenceDeleteCommit {
-        try await validateMutationPermit(permit, document: document)
-        let validator = try await prepareJournalValidator()
-        return try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).persistDeletedBlocking(
-                validator: validator,
-                document: document,
-                expectedWorkspaceRevision: expectedWorkspaceRevision,
-                expectedCatalogRevision: expectedCatalogRevision,
-                operation: operation,
-                now: now,
-                permit: permit,
-                commandClaim: commandClaim
-            )
-        }
-    }
-
     func currentCatalogRevision() async throws -> UInt64? {
         let validator = try await prepareJournalValidator()
         return try await DomainBlockingIO.run { cancellation in
@@ -1244,28 +1076,13 @@ package struct DomainPersistenceCoordinator {
             )
         }
 
-        var evidence = try semanticTargetRecoveryEvidence(
+        let evidence = try semanticTargetRecoveryEvidence(
             validation: validation,
             workspaceID: workspaceID,
             fallbackFileURL: fallbackFileURL
         )
-        var prepared = try commandAdmission.prepareSemanticTargetRecovery(evidence)
-        var preview = try prepared.preview()
-        if let permit, !preview.journalRewrites.isEmpty {
-            prepared.close()
-            try applySemanticJournalRewrites(preview.journalRewrites, permit: permit)
-            evidence = try semanticTargetRecoveryEvidence(
-                validation: validation,
-                workspaceID: workspaceID,
-                fallbackFileURL: fallbackFileURL
-            )
-            prepared = try commandAdmission.prepareSemanticTargetRecovery(evidence)
-            preview = try prepared.preview()
-            guard preview.journalRewrites.isEmpty else {
-                prepared.close()
-                throw DomainPersistenceError.journalCorruption()
-            }
-        }
+        let prepared = try commandAdmission.prepareSemanticTargetRecovery(evidence)
+        let preview = try prepared.preview()
         guard preview.catalogRevision == validation.catalog.revision,
               preview.catalogDigest == validation.contentDigest,
               preview.targetWorkspaceID == workspaceID,
@@ -1327,9 +1144,6 @@ package struct DomainPersistenceCoordinator {
         permit: DomainWorkspaceMutationPermit?,
         commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceBootstrap {
-        if let permit {
-            try recoverInterruptedCreates(validator: validator, permit: permit)
-        }
         let validation: DomainWorkspaceCatalogValidation
         do {
             validation = try validatedSemanticRecoveryCatalog(validator: validator)
@@ -1348,22 +1162,10 @@ package struct DomainPersistenceCoordinator {
             )
         }
 
-        var evidence = try semanticFullRecoveryEvidence(validation: validation)
-        var prepared = try commandAdmission?.prepareSemanticFullRecovery(evidence)
+        let evidence = try semanticFullRecoveryEvidence(validation: validation)
+        let prepared = try commandAdmission?.prepareSemanticFullRecovery(evidence)
             ?? validator.prepareInitialSemanticRecovery(evidence)
-        var preview = try prepared.preview()
-        if let permit, !preview.journalRewrites.isEmpty {
-            prepared.close()
-            try applySemanticJournalRewrites(preview.journalRewrites, permit: permit)
-            evidence = try semanticFullRecoveryEvidence(validation: validation)
-            prepared = try commandAdmission?.prepareSemanticFullRecovery(evidence)
-                ?? validator.prepareInitialSemanticRecovery(evidence)
-            preview = try prepared.preview()
-            guard preview.journalRewrites.isEmpty else {
-                prepared.close()
-                throw DomainPersistenceError.journalCorruption()
-            }
-        }
+        let preview = try prepared.preview()
         guard preview.catalogRevision == validation.catalog.revision,
               preview.catalogDigest == validation.contentDigest,
               preview.targetWorkspaceID == nil,
@@ -1411,82 +1213,6 @@ package struct DomainPersistenceCoordinator {
             semanticRecovery: prepared,
             semanticPreview: preview
         )
-    }
-
-    /// Discovers bounded runtime-owned journals, but delegates every recovery decision and catalog
-    /// candidate to the Rust create transaction. Read-only bootstrap never exposes catalog-absent
-    /// journals; only lease-backed reconciliation can publish them through exact catalog CAS.
-    private func recoverInterruptedCreates(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        permit: DomainWorkspaceMutationPermit
-    ) throws {
-        try validateMutationPermitScope(permit)
-        guard try readCatalogBytes() != nil else { return }
-        let journalURLs = (try? fileManager.contentsOfDirectory(
-            at: journalDirectory,
-            includingPropertiesForKeys: nil
-        )) ?? []
-        for journalURL in journalURLs where journalURL.pathExtension == "json" {
-            try cancellation?.check()
-            try validateMutationPermitScope(permit)
-            guard let workspaceID = UUID(
-                uuidString: journalURL.deletingPathExtension().lastPathComponent
-            ) else { continue }
-            // A deleted workspace must never be recovered back into the catalog. Deletion writes
-            // its tombstone before removing the working journal, and that removal is best-effort
-            // (`removeDeletedArtifact` downgrades failures to `artifactCleanupWarnings`), so a
-            // journal surviving a completed delete is a state this loop can actually meet. The
-            // create-recovery transaction below is not given the tombstones, so it cannot make this
-            // judgement itself -- without this check a leftover journal is republished as a live
-            // workspace.
-            guard !fileManager.fileExists(atPath: deletionURL(workspaceID).path) else { continue }
-            let validation: DomainWorkspaceWorkingJournalValidation
-            switch loadJournal(workspaceID: workspaceID, validator: validator) {
-            case let .success(candidate?):
-                validation = candidate
-            case .success(nil):
-                continue
-            case let .failure(error):
-                if isJournalInfrastructureFailure(error) { throw error }
-                continue
-            }
-            guard let documentBytes = try boundedWorkspaceDocumentBytes(
-                at: validation.journal.fileURL
-            ),
-                let document = try? DomainWorkspaceDocument.decode(
-                    documentBytes: documentBytes,
-                    fileURL: validation.journal.fileURL
-                ),
-                document.workspaceID == workspaceID
-            else { continue }
-            do {
-                _ = try withExistingWorkspaceLocks(
-                    document: document,
-                    validator: validator,
-                    now: Date(),
-                    permit: permit
-                ) { $0 }
-            } catch let error as DomainPersistenceError {
-                switch error {
-                case .stateConflict,
-                     .corruptJournal,
-                     .futureJournal,
-                     .externalDocumentConflict,
-                     .operationIDCollision,
-                     .invalidWorkspaceDocument:
-                    continue
-                case .admissionRecoveryStale,
-                     .admissionFullRecoveryRequired,
-                     .cancelled,
-                     .runtimeShutdownRequested,
-                     .lockTimedOut,
-                     .mutationPermitInvalid,
-                     .workspaceOutsideMutationScope,
-                     .writeFailed:
-                    throw error
-                }
-            }
-        }
     }
 
     private func deletionSidecar(
@@ -1556,21 +1282,21 @@ package struct DomainPersistenceCoordinator {
         let workspaces = try validation.catalog.entries
             .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
             .map { entry in
-                DomainWorkspaceSemanticRecoveryEvidence(
+                try DomainWorkspaceSemanticRecoveryEvidence(
                     workspaceID: entry.workspaceID,
-                    journal: try readSemanticRecoveryArtifact(
+                    journal: readSemanticRecoveryArtifact(
                         at: journalURL(entry.workspaceID),
                         maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
                         readFailureReason: "working_journal_read_failed",
                         oversizedReason: "working_journal_too_large"
                     ),
-                    savedDocument: try readSemanticRecoveryArtifact(
+                    savedDocument: readSemanticRecoveryArtifact(
                         at: entry.fileURL,
                         maximumBytes: CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes,
                         readFailureReason: "workspace_document_read_failed",
                         oversizedReason: "workspace_document_too_large"
                     ),
-                    savedRevision: try readSemanticRecoveryArtifact(
+                    savedRevision: readSemanticRecoveryArtifact(
                         at: revisionURL(entry.workspaceID),
                         maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
                         readFailureReason: "saved_revision_read_failed",
@@ -1581,9 +1307,9 @@ package struct DomainPersistenceCoordinator {
         let deletions = try (validation.catalog.deletions ?? [])
             .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
             .map { deletion in
-                DomainWorkspaceSemanticDeletionRecoveryEvidence(
+                try DomainWorkspaceSemanticDeletionRecoveryEvidence(
                     workspaceID: deletion.workspaceID,
-                    sidecar: try readSemanticRecoveryArtifact(
+                    sidecar: readSemanticRecoveryArtifact(
                         at: deletionURL(deletion.workspaceID),
                         maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
                         readFailureReason: "deletion_tombstone_read_failed",
@@ -1740,31 +1466,6 @@ package struct DomainPersistenceCoordinator {
         )
     }
 
-    private func applySemanticJournalRewrites(
-        _ rewrites: [DomainWorkspaceSemanticJournalRewrite],
-        permit: DomainWorkspaceMutationPermit
-    ) throws {
-        try validateMutationPermitScope(permit)
-        for rewrite in rewrites {
-            try cancellation?.check()
-            try withLock(at: lockURL(rewrite.workspaceID)) {
-                try validateMutationPermitScope(permit)
-                let current = try readRawJournalSnapshot(workspaceID: rewrite.workspaceID)
-                guard case let .present(digest, _) = current,
-                      digest == rewrite.expectedArtifactDigest,
-                      DomainContentDigest.sha256(rewrite.replacementCanonicalBytes)
-                          == rewrite.replacementCanonicalDigest
-                else {
-                    throw DomainPersistenceError.stateConflict(expected: 0, actual: 0)
-                }
-                try writeJournalBytes(
-                    rewrite.replacementCanonicalBytes,
-                    workspaceID: rewrite.workspaceID
-                )
-            }
-        }
-    }
-
     private func isJournalInfrastructureFailure(_ error: Error) -> Bool {
         guard let persistenceError = error as? DomainPersistenceError else { return true }
         switch persistenceError {
@@ -1815,1473 +1516,6 @@ package struct DomainPersistenceCoordinator {
               document.workspaceID == expectedWorkspaceID
         else { return nil }
         return document
-    }
-
-    private func persistCreatedBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedCatalogRevision: UInt64?,
-        operationID: UUID,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) throws -> DomainPersistenceSavedCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
-            try validateMutationScope(permit, document: document)
-            let currentCatalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)
-            let currentCatalogValidation = currentCatalogSnapshot.validation
-            let currentCatalog = currentCatalogValidation.catalog
-            if let expectedCatalogRevision,
-               expectedCatalogRevision != currentCatalog.revision
-            {
-                throw DomainPersistenceError.stateConflict(
-                    expected: expectedCatalogRevision,
-                    actual: currentCatalog.revision
-                )
-            }
-            guard !currentCatalog.entries.contains(where: {
-                $0.workspaceID == document.workspaceID
-            }) else {
-                throw DomainPersistenceError.stateConflict(expected: 0, actual: 1)
-            }
-            guard operation.operationID == operationID else {
-                throw DomainPersistenceError.journalCorruption()
-            }
-
-            return try withLock(at: lockURL(document.workspaceID)) {
-                try validateMutationScope(permit, document: document)
-                let originalRaw = try readRawJournalSnapshot(workspaceID: document.workspaceID)
-                if case let .present(_, bytes) = originalRaw {
-                    let existing = try validator.validateSynchronously(
-                        bytes,
-                        expectedWorkspaceID: document.workspaceID,
-                        expectedFileURL: document.fileURL
-                    ).journal
-                    throw DomainPersistenceError.stateConflict(
-                        expected: 0,
-                        actual: existing.revisions.workingRevision
-                    )
-                }
-                guard !fileManager.fileExists(atPath: document.fileURL.path) else {
-                    throw DomainPersistenceError.stateConflict(expected: 0, actual: 1)
-                }
-                let rawCatalogBytes: Data? = switch currentCatalogSnapshot.raw {
-                case .absent: nil
-                case let .present(_, bytes): bytes
-                }
-                let transaction = try validator.beginCreateTransaction(
-                    rawCatalogBytes: rawCatalogBytes,
-                    effectiveCatalog: currentCatalogValidation,
-                    document: document,
-                    operation: operation,
-                    updatedAt: now,
-                    commandClaim: commandClaim
-                )
-                defer { transaction.close() }
-
-                func failureReport(
-                    actionID: UInt64,
-                    error: Error
-                ) -> CoreWorkspaceSaveActionReportV1 {
-                    if error is CancellationError
-                                            || error as? DomainPersistenceError == .cancelled
-                                            || error as? DomainPersistenceError == .runtimeShutdownRequested
-                                        {
-                        return .cancelled(actionID: actionID)
-                    }
-                    if case let DomainPersistenceError.stateConflict(expected, actual) = error {
-                        return .stateConflict(
-                            actionID: actionID,
-                            expected: expected,
-                            actual: actual
-                        )
-                    }
-                    return .writeFailed(actionID: actionID)
-                }
-
-                var rawJournal = originalRaw
-                var directive = try transaction.nextDirective()
-                var authorityReceipt: DomainWorkspaceCreateCommitReceipt?
-                var catalogAuthorityEstablished = false
-                do {
-                    createTransactionLoop: while true {
-                        switch directive {
-                        case let .writePendingJournal(
-                            actionID,
-                            expectedRawDigest,
-                            validation,
-                            logicalExpectedRevision
-                        ):
-                            guard rawJournal.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.journalCorruption()
-                            }
-                            rawJournal = try replaceJournal(
-                                expected: rawJournal,
-                                candidate: PreparedJournalCandidate(
-                                    journal: validation.journal,
-                                    canonicalBytes: validation.canonicalBytes,
-                                    contentDigest: validation.contentDigest
-                                ),
-                                logicalExpectedRevision: logicalExpectedRevision,
-                                validator: validator
-                            )
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: validation.contentDigest
-                            ))
-                        case let .publishWorkspaceDocument(actionID, bytes, contentDigest):
-                            try DomainPersistenceLock.atomicWrite(bytes, to: document.fileURL)
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: contentDigest
-                            ))
-                        case let .writeCommittedJournal(
-                            actionID,
-                            expectedRawDigest,
-                            validation,
-                            logicalExpectedRevision
-                        ):
-                            guard rawJournal.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.journalCorruption()
-                            }
-                            rawJournal = try replaceJournal(
-                                expected: rawJournal,
-                                candidate: PreparedJournalCandidate(
-                                    journal: validation.journal,
-                                    canonicalBytes: validation.canonicalBytes,
-                                    contentDigest: validation.contentDigest
-                                ),
-                                logicalExpectedRevision: logicalExpectedRevision,
-                                validator: validator,
-                                allowsCancellation: false
-                            )
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: validation.contentDigest
-                            ))
-                        case let .writeSavedRevision(actionID, validation):
-                            try DomainPersistenceLock.atomicWrite(
-                                validation.canonicalBytes,
-                                to: revisionURL(document.workspaceID)
-                            )
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: validation.contentDigest
-                            ))
-                        case let .removeDeletionSidecar(actionID, contentDigest):
-                            let sidecar = deletionURL(document.workspaceID)
-                            if fileManager.fileExists(atPath: sidecar.path) {
-                                try fileManager.removeItem(at: sidecar)
-                            }
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: contentDigest
-                            ))
-                        case let .publishCatalog(
-                            actionID,
-                            expectedRawDigest,
-                            catalog,
-                            logicalExpectedRevision,
-                            attachedReceipt
-                        ):
-                            guard currentCatalogSnapshot.raw.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.journalCorruption()
-                            }
-                            do {
-                                let authorityPermit = try transaction.acquireAuthorityPermit()
-                                defer { authorityPermit.close() }
-                                _ = try writeCatalog(
-                                    expected: currentCatalogSnapshot.raw,
-                                    candidate: catalog,
-                                    logicalExpectedRevision: logicalExpectedRevision,
-                                    validator: validator
-                                )
-                                catalogAuthorityEstablished = true
-                                do {
-                                    let reported = try transaction.report(.success(
-                                        actionID: actionID,
-                                        writtenDigest: catalog.contentDigest
-                                    ))
-                                    if case let .committed(receipt) = reported {
-                                        authorityReceipt = receipt
-                                    } else {
-                                        authorityReceipt = attachedReceipt
-                                    }
-                                } catch {
-                                    authorityReceipt = attachedReceipt
-                                }
-                                break createTransactionLoop
-                            } catch {
-                                let physicalError = error
-                                do {
-                                    directive = try transaction.report(failureReport(
-                                        actionID: actionID,
-                                        error: physicalError
-                                    ))
-                                } catch {
-                                    throw physicalError
-                                }
-                                if case .failed = directive { throw physicalError }
-                            }
-                        case let .committed(receipt):
-                            authorityReceipt = receipt
-                            catalogAuthorityEstablished = true
-                            break createTransactionLoop
-                        case let .failed(failure):
-                            switch failure {
-                            case .cancelled:
-                                throw DomainPersistenceError.cancelled
-                            case let .stateConflict(expected, actual):
-                                throw DomainPersistenceError.stateConflict(
-                                    expected: expected,
-                                    actual: actual
-                                )
-                            case .writeFailed:
-                                throw DomainPersistenceError.writeFailed(
-                                    "workspace_create_transaction_write_failed"
-                                )
-                            }
-                        }
-                    }
-                } catch {
-                    if !catalogAuthorityEstablished {
-                        try? fileManager.removeItem(at: journalURL(document.workspaceID))
-                        try? fileManager.removeItem(at: revisionURL(document.workspaceID))
-                        try? fileManager.removeItem(at: document.fileURL)
-                    }
-                    throw error
-                }
-                guard let authorityReceipt else {
-                    throw DomainPersistenceError.journalCorruption()
-                }
-                return DomainPersistenceSavedCommit(
-                    journal: authorityReceipt.committedJournal.journal,
-                    catalogRevision: authorityReceipt.catalog.catalog.revision,
-                    revisionSidecarMissing: false,
-                    authorityFinalization: transaction.finishCommandAuthority()
-                )
-            }
-        }
-    }
-
-    private func executeJournalMutationTransaction(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        snapshot: ValidatedJournalSnapshot,
-        document: DomainWorkspaceDocument,
-        transition: DomainWorkspaceWorkingJournalTransition,
-        catalogRevision: UInt64,
-        revisionOperationID: UUID?,
-        now: Date,
-        diskDocumentBytes: Data?,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        recoveryMode: Bool,
-        externalObservationPlan: DomainExternalObservationRecoveryPlan? = nil,
-        externalObservationBytes: Data? = nil,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil,
-        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
-        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil
-    ) throws -> (
-        receipt: DomainWorkspaceJournalMutationCommitReceipt,
-        finalization: DomainWorkspaceJournalMutationFinalization,
-        authorityFinalization: DomainWorkspaceCommandAuthorityFinalization,
-        claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?
-    ) {
-        let rawJournalBytes: Data? = switch snapshot.raw {
-        case .absent: nil
-        case let .present(_, bytes): bytes
-        }
-        let transaction: DomainWorkspaceRustJournal.PreparedJournalMutationTransaction
-        if let externalObservationPlan,
-           let externalObservationBytes,
-           let commandAdmission
-        {
-            do {
-                transaction = try commandAdmission.beginExternalObservationRecoveryTransaction(
-                    plan: externalObservationPlan,
-                    rawJournalBytes: rawJournalBytes,
-                    effectiveJournal: snapshot.effectiveValidation,
-                    externalDocumentBytes: externalObservationBytes
-                )
-            } catch {
-                throw error
-            }
-        } else {
-            transaction = try validator.beginJournalMutationTransaction(
-                rawJournalBytes: rawJournalBytes,
-                effectiveJournal: snapshot.effectiveValidation,
-                document: document,
-                transition: transition,
-                catalogRevision: catalogRevision,
-                revisionOperationID: revisionOperationID,
-                updatedAt: now,
-                diskDocumentBytes: diskDocumentBytes,
-                commandClaim: commandClaim,
-                recoveryMode: recoveryMode,
-                selectionMutation: selectionMutation,
-                contextMutation: contextMutation
-            )
-        }
-        defer { transaction.close() }
-
-        func rawSnapshot(digest: String?) -> RawJournalSnapshot {
-            if let digest { return .present(digest: digest, bytes: Data()) }
-            return .absent
-        }
-
-        func failureReport(
-            actionID: UInt64,
-            error: Error
-        ) -> CoreWorkspaceSaveActionReportV1 {
-            if error is CancellationError
-                                    || error as? DomainPersistenceError == .cancelled
-                                    || error as? DomainPersistenceError == .runtimeShutdownRequested
-                                {
-                return .cancelled(actionID: actionID)
-            }
-            if case let DomainPersistenceError.stateConflict(expected, actual) = error {
-                return .stateConflict(
-                    actionID: actionID,
-                    expected: expected,
-                    actual: actual
-                )
-            }
-            return .writeFailed(actionID: actionID)
-        }
-
-        var directive = try transaction.nextDirective()
-        var activatedReceipt: DomainWorkspaceJournalMutationCommitReceipt?
-        var activatedFinalization: DomainWorkspaceJournalMutationFinalization?
-        var expectedActionID: UInt64 = 1
-
-        func receiptsMatch(
-            _ lhs: DomainWorkspaceJournalMutationCommitReceipt,
-            _ rhs: DomainWorkspaceJournalMutationCommitReceipt
-        ) -> Bool {
-            lhs.workspaceID == rhs.workspaceID
-                && lhs.requestDigest == rhs.requestDigest
-                && lhs.catalogRevision == rhs.catalogRevision
-                && lhs.committedJournal.contentDigest == rhs.committedJournal.contentDigest
-                && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
-                && lhs.savedRevision?.contentDigest == rhs.savedRevision?.contentDigest
-                && lhs.savedRevision?.canonicalBytes == rhs.savedRevision?.canonicalBytes
-                && lhs.commandResult == rhs.commandResult
-        }
-
-        func claimlessPublication() throws -> DomainWorkspaceClaimlessAuthorityPublicationReceipt? {
-            guard externalObservationPlan != nil else { return nil }
-            return try transaction.finishClaimlessAuthorityPublication()
-        }
-
-        func activatedOutcome() throws -> (
-            receipt: DomainWorkspaceJournalMutationCommitReceipt,
-            finalization: DomainWorkspaceJournalMutationFinalization,
-            authorityFinalization: DomainWorkspaceCommandAuthorityFinalization,
-            claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?
-        )? {
-            guard let activatedReceipt, let activatedFinalization else { return nil }
-            return (
-                activatedReceipt,
-                activatedFinalization,
-                transaction.finishCommandAuthority(),
-                try claimlessPublication()
-            )
-        }
-
-        while true {
-            switch directive {
-            case let .writeJournal(
-                actionID,
-                expectedRawDigest,
-                validation,
-                logicalExpectedRevision,
-                authorityReceipt,
-                postAuthoritySuccessFinalization
-            ):
-                guard actionID == expectedActionID, activatedReceipt == nil else {
-                    if let outcome = try activatedOutcome() { return outcome }
-                    throw DomainPersistenceError.journalCorruption()
-                }
-                do {
-                    let authorityPermit = try transaction.acquireAuthorityPermit()
-                    defer { authorityPermit.close() }
-                    _ = try replaceJournal(
-                        expected: rawSnapshot(digest: expectedRawDigest),
-                        candidate: PreparedJournalCandidate(
-                            journal: validation.journal,
-                            canonicalBytes: validation.canonicalBytes,
-                            contentDigest: validation.contentDigest
-                        ),
-                        logicalExpectedRevision: logicalExpectedRevision,
-                        validator: validator
-                    )
-                    activatedReceipt = authorityReceipt
-                    activatedFinalization = postAuthoritySuccessFinalization
-                    expectedActionID += 1
-                    do {
-                        directive = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: validation.contentDigest
-                        ))
-                    } catch {
-                        return (
-                            authorityReceipt,
-                            postAuthoritySuccessFinalization,
-                            transaction.finishCommandAuthority(),
-                            try claimlessPublication()
-                        )
-                    }
-                } catch {
-                    let physicalError = error
-                    do {
-                        directive = try transaction.report(failureReport(
-                            actionID: actionID,
-                            error: physicalError
-                        ))
-                    } catch {
-                        throw physicalError
-                    }
-                    if case .failed = directive { throw physicalError }
-                }
-
-            case let .writeSavedRevision(
-                actionID,
-                validation,
-                postAuthoritySuccessFinalization,
-                postAuthorityFailureFinalization
-            ):
-                guard actionID == expectedActionID, activatedReceipt != nil else {
-                    if let outcome = try activatedOutcome() { return outcome }
-                    throw DomainPersistenceError.journalCorruption()
-                }
-                do {
-                    try DomainPersistenceLock.atomicWrite(
-                        validation.canonicalBytes,
-                        to: revisionURL(document.workspaceID)
-                    )
-                    activatedFinalization = postAuthoritySuccessFinalization
-                    expectedActionID += 1
-                    do {
-                        directive = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: validation.contentDigest
-                        ))
-                    } catch {
-                        guard let activatedReceipt else { throw error }
-                        return (
-                            activatedReceipt,
-                            postAuthoritySuccessFinalization,
-                            transaction.finishCommandAuthority(),
-                            try claimlessPublication()
-                        )
-                    }
-                } catch {
-                    let physicalError = error
-                    activatedFinalization = postAuthorityFailureFinalization
-                    expectedActionID += 1
-                    do {
-                        directive = try transaction.report(failureReport(
-                            actionID: actionID,
-                            error: physicalError
-                        ))
-                    } catch {
-                        guard let activatedReceipt, let activatedFinalization else { throw physicalError }
-                        return (
-                            activatedReceipt,
-                            activatedFinalization,
-                            transaction.finishCommandAuthority(),
-                            try claimlessPublication()
-                        )
-                    }
-                }
-
-            case let .committed(receipt, finalization):
-                guard let outcome = try activatedOutcome() else {
-                    throw DomainPersistenceError.journalCorruption()
-                }
-                guard receiptsMatch(receipt, outcome.receipt),
-                      finalization == outcome.finalization
-                else { return outcome }
-                return (
-                    receipt,
-                    finalization,
-                    transaction.finishCommandAuthority(),
-                    try claimlessPublication()
-                )
-
-            case let .failed(failure):
-                if let outcome = try activatedOutcome() { return outcome }
-                switch failure {
-                case .cancelled:
-                    throw DomainPersistenceError.cancelled
-                case let .stateConflict(expected, actual):
-                    throw DomainPersistenceError.stateConflict(
-                        expected: expected,
-                        actual: actual
-                    )
-                case .writeFailed:
-                    throw DomainPersistenceError.writeFailed(
-                        "workspace_journal_mutation_transaction_write_failed"
-                    )
-                }
-            }
-        }
-    }
-
-    private func persistUnchangedBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) throws -> DomainPersistenceWorkingCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: document,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            let snapshot = try readCurrentJournalOrSeed(
-                document: document,
-                validator: validator
-            )
-            let result = try executeJournalMutationTransaction(
-                validator: validator,
-                snapshot: snapshot,
-                document: document,
-                transition: .unchanged(
-                    expectedWorkingRevision: expectedRevision,
-                    operationID: operation.operationID,
-                    fingerprint: operation.fingerprint,
-                    updatedAt: now
-                ),
-                catalogRevision: catalogRevision,
-                revisionOperationID: nil,
-                now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                recoveryMode: false
-            )
-            return DomainPersistenceWorkingCommit(
-                journal: result.receipt.committedJournal.journal,
-                catalogRevision: result.receipt.catalogRevision,
-                authorityFinalization: result.authorityFinalization
-            )
-        }
-    }
-
-    private func persistWorkingBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operationID: UUID?,
-        fingerprint: String?,
-        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
-        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        recoveryMode: Bool
-    ) throws -> DomainPersistenceWorkingCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: document,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            let snapshot = try readCurrentJournalOrSeed(
-                document: document,
-                validator: validator
-            )
-            let result = try executeJournalMutationTransaction(
-                validator: validator,
-                snapshot: snapshot,
-                document: document,
-                transition: .working(
-                    expectedWorkingRevision: expectedRevision,
-                    operationID: operationID,
-                    fingerprint: fingerprint,
-                    updatedAt: now
-                ),
-                catalogRevision: catalogRevision,
-                revisionOperationID: nil,
-                now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                recoveryMode: recoveryMode,
-                selectionMutation: selectionMutation,
-                contextMutation: contextMutation
-            )
-            return DomainPersistenceWorkingCommit(
-                journal: result.receipt.committedJournal.journal,
-                catalogRevision: result.receipt.catalogRevision,
-                authorityFinalization: result.authorityFinalization
-            )
-        }
-    }
-
-    private func persistWorkingRecoveryBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) throws -> DomainPersistenceWorkingCommit {
-        try persistWorkingBlocking(
-            validator: validator,
-            document: document,
-            expectedRevision: expectedRevision,
-            operationID: nil,
-            fingerprint: nil,
-            now: now,
-            permit: permit,
-            commandClaim: nil,
-            recoveryMode: true
-        )
-    }
-
-    private func persistSavedBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedWorkingRevision: UInt64,
-        operationID: UUID,
-        fingerprint: String,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) throws -> DomainPersistenceSavedCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: document,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            let snapshot = try readCurrentJournalOrSeed(
-                document: document,
-                validator: validator
-            )
-            let rawJournalBytes: Data? = switch snapshot.raw {
-            case .absent: nil
-            case let .present(_, bytes): bytes
-            }
-            let transaction = try validator.beginSaveTransaction(
-                rawJournalBytes: rawJournalBytes,
-                effectiveJournal: snapshot.effectiveValidation,
-                document: document,
-                expectedWorkingRevision: expectedWorkingRevision,
-                operationID: operationID,
-                fingerprint: fingerprint,
-                updatedAt: now,
-                catalogRevision: catalogRevision,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim
-            )
-            defer { transaction.close() }
-
-            func commit(
-                _ receipt: DomainWorkspaceSaveCommitReceipt,
-                finalization: DomainWorkspaceSaveFinalization
-            ) -> DomainPersistenceSavedCommit {
-                DomainPersistenceSavedCommit(
-                    journal: receipt.committedJournal.journal,
-                    catalogRevision: receipt.catalogRevision,
-                    revisionSidecarMissing: finalization == .revisionSidecarMissing,
-                    authorityFinalization: transaction.finishCommandAuthority()
-                )
-            }
-
-            func rawSnapshot(
-                digest: String?,
-                bytes: Data = Data()
-            ) -> RawJournalSnapshot {
-                if let digest { return .present(digest: digest, bytes: bytes) }
-                return .absent
-            }
-
-            func failureReport(
-                actionID: UInt64,
-                error: Error
-            ) -> CoreWorkspaceSaveActionReportV1 {
-                if error is CancellationError
-                                        || error as? DomainPersistenceError == .cancelled
-                                        || error as? DomainPersistenceError == .runtimeShutdownRequested
-                                    {
-                    return .cancelled(actionID: actionID)
-                }
-                if case let DomainPersistenceError.stateConflict(expected, actual) = error {
-                    return .stateConflict(
-                        actionID: actionID,
-                        expected: expected,
-                        actual: actual
-                    )
-                }
-                return .writeFailed(actionID: actionID)
-            }
-
-            var directive = try transaction.nextDirective()
-            var activatedReceipt: DomainWorkspaceSaveCommitReceipt?
-            var activatedFinalization: DomainWorkspaceSaveFinalization?
-            var expectedActionID: UInt64 = 1
-
-            func receiptsMatch(
-                _ lhs: DomainWorkspaceSaveCommitReceipt,
-                _ rhs: DomainWorkspaceSaveCommitReceipt
-            ) -> Bool {
-                lhs.workspaceID == rhs.workspaceID
-                    && lhs.operationID == rhs.operationID
-                    && lhs.requestDigest == rhs.requestDigest
-                    && lhs.catalogRevision == rhs.catalogRevision
-                    && lhs.documentDigest == rhs.documentDigest
-                    && lhs.committedJournal.contentDigest == rhs.committedJournal.contentDigest
-                    && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
-                    && lhs.savedRevision.contentDigest == rhs.savedRevision.contentDigest
-                    && lhs.savedRevision.canonicalBytes == rhs.savedRevision.canonicalBytes
-                    && lhs.commandResult == rhs.commandResult
-            }
-
-            func activatedCommit() -> DomainPersistenceSavedCommit? {
-                guard let activatedReceipt, let activatedFinalization else { return nil }
-                return commit(
-                    activatedReceipt,
-                    finalization: activatedFinalization
-                )
-            }
-
-            while true {
-                switch directive {
-                case let .writePendingJournal(
-                    actionID,
-                    expectedRawDigest,
-                    validation,
-                    logicalExpectedRevision
-                ):
-                    guard actionID == expectedActionID, activatedReceipt == nil else {
-                        if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    do {
-                        _ = try replaceJournal(
-                            expected: rawSnapshot(digest: expectedRawDigest),
-                            candidate: PreparedJournalCandidate(
-                                journal: validation.journal,
-                                canonicalBytes: validation.canonicalBytes,
-                                contentDigest: validation.contentDigest
-                            ),
-                            logicalExpectedRevision: logicalExpectedRevision,
-                            validator: validator
-                        )
-                        expectedActionID += 1
-                        directive = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: validation.contentDigest
-                        ))
-                    } catch {
-                        let physicalError = error
-                        do {
-                            directive = try transaction.report(failureReport(
-                                actionID: actionID,
-                                error: physicalError
-                            ))
-                        } catch {
-                            throw physicalError
-                        }
-                        if case .failed = directive { throw physicalError }
-                    }
-
-                case let .publishWorkspaceDocument(
-                    actionID,
-                    bytes,
-                    contentDigest,
-                    authorityReceipt,
-                    postAuthoritySuccessFinalization
-                ):
-                    guard actionID == expectedActionID, activatedReceipt == nil else {
-                        if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    guard bytes == document.documentBytes else {
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    do {
-                        let authorityPermit = try transaction.acquireAuthorityPermit()
-                        defer { authorityPermit.close() }
-                        try DomainPersistenceLock.atomicWrite(bytes, to: document.fileURL)
-                        // Rust attached and DomainRuntime verified this receipt before the physical
-                        // authority write. Once atomicWrite returns, no later failure may report a
-                        // false failed save.
-                        activatedReceipt = authorityReceipt
-                        activatedFinalization = postAuthoritySuccessFinalization
-                        expectedActionID += 1
-                        do {
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: contentDigest
-                            ))
-                        } catch {
-                            return commit(
-                                authorityReceipt,
-                                finalization: postAuthoritySuccessFinalization
-                            )
-                        }
-                    } catch {
-                        let physicalError = error
-                        do {
-                            directive = try transaction.report(failureReport(
-                                actionID: actionID,
-                                error: physicalError
-                            ))
-                        } catch {
-                            throw physicalError
-                        }
-                        if case .failed = directive { throw physicalError }
-                    }
-
-                case let .writeCommittedJournal(
-                    actionID,
-                    expectedRawDigest,
-                    validation,
-                    logicalExpectedRevision,
-                    postAuthoritySuccessFinalization,
-                    postAuthorityFailureFinalization
-                ):
-                    guard actionID == expectedActionID, activatedReceipt != nil else {
-                        if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    do {
-                        _ = try replaceJournal(
-                            expected: rawSnapshot(digest: expectedRawDigest),
-                            candidate: PreparedJournalCandidate(
-                                journal: validation.journal,
-                                canonicalBytes: validation.canonicalBytes,
-                                contentDigest: validation.contentDigest
-                            ),
-                            logicalExpectedRevision: logicalExpectedRevision,
-                            validator: validator
-                        )
-                        activatedFinalization = postAuthoritySuccessFinalization
-                        expectedActionID += 1
-                        do {
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: validation.contentDigest
-                            ))
-                        } catch {
-                            guard let committed = activatedCommit() else { throw error }
-                            return committed
-                        }
-                    } catch {
-                        let physicalError = error
-                        activatedFinalization = postAuthorityFailureFinalization
-                        expectedActionID += 1
-                        do {
-                            directive = try transaction.report(failureReport(
-                                actionID: actionID,
-                                error: physicalError
-                            ))
-                        } catch {
-                            if let committed = activatedCommit() { return committed }
-                            throw physicalError
-                        }
-                    }
-
-                case let .writeSavedRevision(
-                    actionID,
-                    validation,
-                    postAuthoritySuccessFinalization,
-                    postAuthorityFailureFinalization
-                ):
-                    guard actionID == expectedActionID, activatedReceipt != nil else {
-                        if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    do {
-                        try DomainPersistenceLock.atomicWrite(
-                            validation.canonicalBytes,
-                            to: revisionURL(document.workspaceID)
-                        )
-                        activatedFinalization = postAuthoritySuccessFinalization
-                        expectedActionID += 1
-                        do {
-                            directive = try transaction.report(.success(
-                                actionID: actionID,
-                                writtenDigest: validation.contentDigest
-                            ))
-                        } catch {
-                            guard let committed = activatedCommit() else { throw error }
-                            return committed
-                        }
-                    } catch {
-                        let physicalError = error
-                        activatedFinalization = postAuthorityFailureFinalization
-                        expectedActionID += 1
-                        do {
-                            directive = try transaction.report(failureReport(
-                                actionID: actionID,
-                                error: physicalError
-                            ))
-                        } catch {
-                            if let committed = activatedCommit() { return committed }
-                            throw physicalError
-                        }
-                    }
-
-                case let .committed(receipt, finalization):
-                    guard let activatedReceipt, let activatedFinalization else {
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    guard receiptsMatch(receipt, activatedReceipt),
-                          finalization == activatedFinalization
-                    else { return commit(activatedReceipt, finalization: activatedFinalization) }
-                    return commit(receipt, finalization: finalization)
-
-                case let .failed(failure):
-                    if let committed = activatedCommit() { return committed }
-                    switch failure {
-                    case .cancelled:
-                        throw DomainPersistenceError.cancelled
-                    case let .stateConflict(expected, actual):
-                        throw DomainPersistenceError.stateConflict(
-                            expected: expected,
-                            actual: actual
-                        )
-                    case .writeFailed:
-                        throw DomainPersistenceError.writeFailed(
-                            "workspace_save_transaction_write_failed"
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    private func persistExternalReloadBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        operationID: UUID?,
-        fingerprint: String?,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        recoveryMode: Bool
-    ) throws -> DomainPersistenceSavedCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: document,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            let snapshot = try readCurrentJournalOrSeed(
-                document: document,
-                validator: validator
-            )
-            let revisionOperationID = UUID()
-            let result = try executeJournalMutationTransaction(
-                validator: validator,
-                snapshot: snapshot,
-                document: document,
-                transition: .externalReload(
-                    expectedWorkingRevision: expectedRevision,
-                    operationID: operationID,
-                    fingerprint: fingerprint,
-                    updatedAt: now
-                ),
-                catalogRevision: catalogRevision,
-                revisionOperationID: revisionOperationID,
-                now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                recoveryMode: recoveryMode
-            )
-            let revisionSidecarMissing: Bool = switch result.finalization {
-            case .finalized: false
-            case .revisionSidecarMissing: true
-            }
-            return DomainPersistenceSavedCommit(
-                journal: result.receipt.committedJournal.journal,
-                catalogRevision: result.receipt.catalogRevision,
-                revisionSidecarMissing: revisionSidecarMissing,
-                authorityFinalization: result.authorityFinalization
-            )
-        }
-    }
-
-    private func persistExternalReloadRecoveryBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedRevision: UInt64,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) throws -> DomainPersistenceSavedCommit {
-        try persistExternalReloadBlocking(
-            validator: validator,
-            document: document,
-            expectedRevision: expectedRevision,
-            operationID: nil,
-            fingerprint: nil,
-            now: now,
-            permit: permit,
-            commandClaim: nil,
-            recoveryMode: true
-        )
-    }
-
-    private func persistExternalObservationRecoveryBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        candidateDocument: DomainWorkspaceDocument,
-        authoritativeDocument: DomainWorkspaceDocument,
-        authoritativeRevisions: DomainRevisionState,
-        externalDocumentBytes: Data,
-        plan: DomainExternalObservationRecoveryPlan,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
-    ) throws -> DomainPersistenceExternalObservationCommit {
-        try validateMutationScope(permit, document: candidateDocument)
-        guard candidateDocument.workspaceID == plan.workspaceID,
-              candidateDocument.fileURL.standardizedFileURL == plan.expectedFileURL.standardizedFileURL,
-              authoritativeDocument.workspaceID == plan.workspaceID,
-              authoritativeDocument.fileURL.standardizedFileURL == plan.expectedFileURL.standardizedFileURL,
-              authoritativeRevisions.workingRevision == plan.workspaceRevision,
-              DomainContentDigest.sha256(authoritativeDocument.documentBytes) == plan.currentDocumentDigest,
-              DomainContentDigest.sha256(externalDocumentBytes) == plan.externalDocumentDigest
-        else {
-            throw DomainPersistenceError.admissionRecoveryStale
-        }
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: candidateDocument,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            guard catalogRevision == plan.catalogRevision else {
-                throw DomainPersistenceError.admissionRecoveryStale
-            }
-            guard let observedExternalBytes = try boundedWorkspaceDocumentBytes(
-                at: candidateDocument.fileURL
-            ),
-                  DomainContentDigest.sha256(observedExternalBytes) == plan.externalDocumentDigest
-            else {
-                throw DomainPersistenceError.externalDocumentConflict
-            }
-            let snapshot: ValidatedJournalSnapshot
-            if case .absent = try readRawJournalSnapshot(workspaceID: plan.workspaceID) {
-                let seeded = try validator.seedWorkingJournal(
-                    workspaceID: authoritativeDocument.workspaceID,
-                    fileURL: authoritativeDocument.fileURL,
-                    revisions: authoritativeRevisions,
-                    savedDigest: plan.savedDigest,
-                    contextDigests: Dictionary(uniqueKeysWithValues: authoritativeDocument.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    updatedAt: plan.updatedAt
-                )
-                snapshot = ValidatedJournalSnapshot(
-                    raw: .absent,
-                    effectiveJournal: seeded.journal,
-                    effectiveValidation: seeded
-                )
-            } else {
-                snapshot = try readCurrentJournalOrSeed(
-                    document: candidateDocument,
-                    validator: validator
-                )
-            }
-            let recoveryDate = plan.updatedAt
-            let transition: DomainWorkspaceWorkingJournalTransition = switch plan.transition {
-            case .externalReload:
-                .externalReload(
-                    expectedWorkingRevision: plan.workspaceRevision,
-                    operationID: nil,
-                    fingerprint: nil,
-                    updatedAt: recoveryDate
-                )
-            case .conflictRebase:
-                .conflictRebase(
-                    expectedRevisions: snapshot.effectiveValidation.journal.revisions,
-                    externalSavedDigest: plan.externalDocumentDigest,
-                    operationID: nil,
-                    fingerprint: nil,
-                    updatedAt: recoveryDate
-                )
-            case .none:
-                throw DomainPersistenceError.admissionRecoveryStale
-            }
-            let result = try executeJournalMutationTransaction(
-                validator: validator,
-                snapshot: snapshot,
-                document: candidateDocument,
-                transition: transition,
-                catalogRevision: catalogRevision,
-                revisionOperationID: plan.revisionSidecarID,
-                now: recoveryDate,
-                diskDocumentBytes: observedExternalBytes,
-                commandClaim: nil,
-                recoveryMode: true,
-                externalObservationPlan: plan,
-                externalObservationBytes: observedExternalBytes,
-                commandAdmission: commandAdmission
-            )
-            let revisionSidecarMissing: Bool = switch result.finalization {
-            case .finalized: false
-            case .revisionSidecarMissing: true
-            }
-            guard let authorityPublication = result.claimlessAuthorityPublication else {
-                throw DomainPersistenceError.journalCorruption()
-            }
-            return DomainPersistenceExternalObservationCommit(
-                journal: result.receipt.committedJournal.journal,
-                catalogRevision: result.receipt.catalogRevision,
-                revisionSidecarMissing: revisionSidecarMissing,
-                authorityPublication: authorityPublication
-            )
-        }
-    }
-
-    private func persistConflictRebaseBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        operationID: UUID?,
-        fingerprint: String?,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        recoveryMode: Bool
-    ) throws -> DomainPersistenceWorkingCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withExistingWorkspaceLocks(
-            document: document,
-            validator: validator,
-            now: now,
-            permit: permit
-        ) { catalogRevision in
-            let snapshot = try readCurrentJournalOrSeed(
-                document: document,
-                validator: validator
-            )
-            let result = try executeJournalMutationTransaction(
-                validator: validator,
-                snapshot: snapshot,
-                document: document,
-                transition: .conflictRebase(
-                    expectedRevisions: expectedRevisions,
-                    externalSavedDigest: externalSavedDigest,
-                    operationID: operationID,
-                    fingerprint: fingerprint,
-                    updatedAt: now
-                ),
-                catalogRevision: catalogRevision,
-                revisionOperationID: nil,
-                now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                recoveryMode: recoveryMode
-            )
-            return DomainPersistenceWorkingCommit(
-                journal: result.receipt.committedJournal.journal,
-                catalogRevision: result.receipt.catalogRevision,
-                authorityFinalization: result.authorityFinalization
-            )
-        }
-    }
-
-    private func persistConflictRebaseRecoveryBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit
-    ) throws -> DomainPersistenceWorkingCommit {
-        try persistConflictRebaseBlocking(
-            validator: validator,
-            document: document,
-            externalSavedDigest: externalSavedDigest,
-            expectedRevisions: expectedRevisions,
-            operationID: nil,
-            fingerprint: nil,
-            now: now,
-            permit: permit,
-            commandClaim: nil,
-            recoveryMode: true
-        )
-    }
-
-    private func persistDeletedBlocking(
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        document: DomainWorkspaceDocument,
-        expectedWorkspaceRevision: UInt64,
-        expectedCatalogRevision: UInt64?,
-        operation: DomainRecordedOperation,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
-    ) throws -> DomainPersistenceDeleteCommit {
-        try validateMutationScope(permit, document: document)
-        try ensureLazyMigration(now: now, permit: permit, validator: validator)
-        return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
-            try validateMutationScope(permit, document: document)
-            let currentCatalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)
-            let currentCatalogValidation = currentCatalogSnapshot.validation
-            let currentCatalog = currentCatalogValidation.catalog
-            let requestedCatalogRevision = expectedCatalogRevision ?? currentCatalog.revision
-            return try withLock(at: lockURL(document.workspaceID)) {
-                try validateMutationScope(permit, document: document)
-                let snapshot = try readCurrentJournalOrSeed(
-                    document: document,
-                    validator: validator
-                )
-                let rawCatalogBytes: Data? = switch currentCatalogSnapshot.raw {
-                case .absent: nil
-                case let .present(_, bytes): bytes
-                }
-                let transaction = try validator.beginDeleteTransaction(
-                    rawCatalogBytes: rawCatalogBytes,
-                    effectiveCatalog: currentCatalogValidation,
-                    effectiveJournal: snapshot.effectiveValidation,
-                    document: document,
-                    expectedWorkingRevision: expectedWorkspaceRevision,
-                    expectedCatalogRevision: requestedCatalogRevision,
-                    operation: operation,
-                    deletedAt: now,
-                    commandClaim: commandClaim
-                )
-                defer { transaction.close() }
-
-                func failureReport(
-                    actionID: UInt64,
-                    error: Error
-                ) -> CoreWorkspaceSaveActionReportV1 {
-                    if error is CancellationError
-                                            || error as? DomainPersistenceError == .cancelled
-                                            || error as? DomainPersistenceError == .runtimeShutdownRequested
-                                        {
-                        return .cancelled(actionID: actionID)
-                    }
-                    if case let DomainPersistenceError.stateConflict(expected, actual) = error {
-                        return .stateConflict(
-                            actionID: actionID,
-                            expected: expected,
-                            actual: actual
-                        )
-                    }
-                    return .writeFailed(actionID: actionID)
-                }
-
-                var directive = try transaction.nextDirective()
-                let receipt: DomainWorkspaceDeleteCommitReceipt
-                let catalogDirectorySyncWarning: String?
-                deleteTransactionLoop: while true {
-                    switch directive {
-                    case let .publishCatalog(
-                        actionID,
-                        expectedRawDigest,
-                        catalog,
-                        logicalExpectedRevision,
-                        authorityReceipt
-                    ):
-                        let capturedDigest: String? = switch currentCatalogSnapshot.raw {
-                        case .absent: nil
-                        case let .present(digest, _): digest
-                        }
-                        guard capturedDigest == expectedRawDigest else {
-                            throw DomainPersistenceError.journalCorruption()
-                        }
-                        do {
-                            let authorityPermit = try transaction.acquireAuthorityPermit()
-                            defer { authorityPermit.close() }
-                            let catalogWriteReceipt = try writeCatalog(
-                                expected: currentCatalogSnapshot.raw,
-                                candidate: catalog,
-                                logicalExpectedRevision: logicalExpectedRevision,
-                                validator: validator
-                            )
-                            catalogDirectorySyncWarning = catalogWriteReceipt.directorySyncWarning
-                            // The catalog rename is delete authority. The attached receipt was
-                            // prevalidated before the write, so no reporting/runtime failure may
-                            // manufacture a failed retry after this point.
-                            do {
-                                let reported = try transaction.report(.success(
-                                    actionID: actionID,
-                                    writtenDigest: catalog.contentDigest
-                                ))
-                                if case let .committed(committedReceipt) = reported {
-                                    receipt = committedReceipt
-                                } else {
-                                    receipt = authorityReceipt
-                                }
-                            } catch {
-                                receipt = authorityReceipt
-                            }
-                            break deleteTransactionLoop
-                        } catch {
-                            let physicalError = error
-                            do {
-                                directive = try transaction.report(failureReport(
-                                    actionID: actionID,
-                                    error: physicalError
-                                ))
-                            } catch {
-                                throw physicalError
-                            }
-                            if case .failed = directive { throw physicalError }
-                        }
-                    case let .committed(committedReceipt):
-                        receipt = committedReceipt
-                        catalogDirectorySyncWarning = nil
-                        break deleteTransactionLoop
-                    case let .failed(failure):
-                        switch failure {
-                        case .cancelled:
-                            throw DomainPersistenceError.cancelled
-                        case let .stateConflict(expected, actual):
-                            throw DomainPersistenceError.stateConflict(
-                                expected: expected,
-                                actual: actual
-                            )
-                        case .writeFailed:
-                            throw DomainPersistenceError.writeFailed(
-                                "workspace_delete_transaction_write_failed"
-                            )
-                        }
-                    }
-                }
-                let plannedTombstone = receipt.tombstone
-                let tombstone = plannedTombstone.tombstone
-                let next = receipt.catalog
-                var artifactCleanupWarnings = [String]()
-                if let catalogDirectorySyncWarning {
-                    // Rename established in-process authority, but a crash may expose the old
-                    // directory entry. Preserve every workspace artifact until reconciliation can
-                    // prove the catalog replacement durable.
-                    artifactCleanupWarnings.append(
-                        "catalog directory sync indeterminate: \(catalogDirectorySyncWarning)"
-                    )
-                } else {
-                    // The catalog embeds the full tombstone. Its sidecar is a recoverable
-                    // convenience and cannot turn an already-authoritative delete into failure.
-                    do {
-                        try DomainPersistenceLock.atomicWrite(
-                            plannedTombstone.canonicalBytes,
-                            to: deletionURL(document.workspaceID)
-                        )
-                    } catch {
-                        artifactCleanupWarnings.append("deletion sidecar: \(error.localizedDescription)")
-                    }
-                    if let warning = removeDeletedArtifact(
-                        at: journalURL(document.workspaceID),
-                        label: "working journal"
-                    ) {
-                        artifactCleanupWarnings.append(warning)
-                    }
-                    if let warning = removeDeletedArtifact(
-                        at: revisionURL(document.workspaceID),
-                        label: "revision sidecar"
-                    ) {
-                        artifactCleanupWarnings.append(warning)
-                    }
-                    if let warning = removeDeletedArtifact(
-                        at: document.fileURL,
-                        label: "workspace document"
-                    ) {
-                        artifactCleanupWarnings.append(warning)
-                    }
-                    artifactCleanupWarnings.append(contentsOf: finalizeDeletedWorkspaceArtifacts(document))
-                }
-
-                var recordedTombstone = tombstone
-                if !artifactCleanupWarnings.isEmpty {
-                    do {
-                        let cleanupPlan = try transaction.planCleanup(
-                            cleanupWarnings: artifactCleanupWarnings
-                        )
-                        recordedTombstone = cleanupPlan.tombstone
-                        if catalogDirectorySyncWarning == nil {
-                            do {
-                                try DomainPersistenceLock.atomicWrite(
-                                    cleanupPlan.canonicalBytes,
-                                    to: deletionURL(document.workspaceID)
-                                )
-                            } catch {
-                                artifactCleanupWarnings.append(
-                                    "cleanup status sidecar: \(error.localizedDescription)"
-                                )
-                                if let amendedPlan = try? transaction.planCleanup(
-                                    cleanupWarnings: artifactCleanupWarnings
-                                ) {
-                                    recordedTombstone = amendedPlan.tombstone
-                                }
-                            }
-                        }
-                    } catch {
-                        artifactCleanupWarnings.append(
-                            "cleanup status planning: \(error.localizedDescription)"
-                        )
-                    }
-                }
-                let finalization = transaction.finishCommandAuthority(
-                    cleanupWarnings: artifactCleanupWarnings.isEmpty ? nil : artifactCleanupWarnings
-                )
-                if let finalizedTombstone = finalization.tombstone {
-                    recordedTombstone = finalizedTombstone.tombstone
-                }
-                return DomainPersistenceDeleteCommit(
-                    catalogRevision: next.catalog.revision,
-                    tombstone: recordedTombstone,
-                    artifactCleanupWarnings: artifactCleanupWarnings,
-                    authorityFinalization: finalization.authorityFinalization
-                )
-            }
-        }
-    }
-
-    private func finalizeDeletedWorkspaceArtifacts(_ document: DomainWorkspaceDocument) -> [String] {
-        let fileURL = document.fileURL.standardizedFileURL
-        guard fileURL.lastPathComponent == "workspace.json" else { return [] }
-        let workspaceDirectory = fileURL.deletingLastPathComponent()
-        if document.metadata.customStoragePath != nil {
-            return removeDeletedArtifact(
-                at: workspaceDirectory.appendingPathComponent("_git_data", isDirectory: true),
-                label: "workspace git-data directory"
-            ).map { [$0] } ?? []
-        }
-
-        let expectedParent = workspaceRoot.standardizedFileURL
-        let identitySuffix = "-\(document.workspaceID.uuidString)"
-        guard workspaceDirectory.deletingLastPathComponent().standardizedFileURL == expectedParent,
-              workspaceDirectory.lastPathComponent.hasSuffix(identitySuffix)
-        else { return [] }
-        return removeDeletedArtifact(
-            at: workspaceDirectory,
-            label: "workspace artifact directory"
-        ).map { [$0] } ?? []
-    }
-
-    private func removeDeletedArtifact(at url: URL, label: String) -> String? {
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        do {
-            try fileManager.removeItem(at: url)
-            return nil
-        } catch {
-            return "\(label): \(error.localizedDescription)"
-        }
     }
 
     private func externalObservationEvidenceBlocking(
@@ -3515,54 +1749,6 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private func writeJournalBytes(_ bytes: Data, workspaceID: UUID) throws {
-        try DomainPersistenceLock.atomicWrite(bytes, to: journalURL(workspaceID))
-    }
-
-    @discardableResult
-    private func replaceJournal(
-        expected: RawJournalSnapshot,
-        candidate: PreparedJournalCandidate,
-        logicalExpectedRevision: UInt64,
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        allowsCancellation: Bool = true
-    ) throws -> RawJournalSnapshot {
-        let current = try readRawJournalSnapshot(
-            workspaceID: candidate.journal.workspaceID,
-            allowsCancellation: allowsCancellation
-        )
-        let matches = switch (expected, current) {
-        case (.absent, .absent):
-            true
-        case let (.present(expectedDigest, _), .present(currentDigest, _)):
-            expectedDigest == currentDigest
-        default:
-            false
-        }
-        guard matches else {
-            let actualRevision: UInt64
-            switch current {
-            case .absent:
-                actualRevision = 0
-            case let .present(_, bytes):
-                actualRevision = try validator.validateSynchronously(
-                    bytes,
-                    expectedWorkspaceID: candidate.journal.workspaceID,
-                    expectedFileURL: candidate.journal.fileURL
-                ).journal.revisions.workingRevision
-            }
-            throw DomainPersistenceError.stateConflict(
-                expected: logicalExpectedRevision,
-                actual: actualRevision
-            )
-        }
-        try writeJournalBytes(
-            candidate.canonicalBytes,
-            workspaceID: candidate.journal.workspaceID
-        )
-        return .present(digest: candidate.contentDigest, bytes: candidate.canonicalBytes)
-    }
-
     private func readSavedRevisionSnapshot(workspaceID: UUID) throws -> OptionalMetadataSnapshot {
         try readOptionalMetadataSnapshot(at: revisionURL(workspaceID))
     }
@@ -3691,158 +1877,6 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private func withExistingWorkspaceLocks<T>(
-        document: DomainWorkspaceDocument,
-        validator: DomainWorkspaceRustJournal.PreparedValidator,
-        now: Date,
-        permit: DomainWorkspaceMutationPermit,
-        _ body: (UInt64) throws -> T
-    ) throws -> T {
-        try validateMutationScope(permit, document: document)
-        return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
-            try validateMutationScope(permit, document: document)
-            let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)
-            let catalogValidation = catalogSnapshot.validation
-            let catalog = catalogValidation.catalog
-            return try withLock(at: lockURL(document.workspaceID)) {
-                try validateMutationScope(permit, document: document)
-                if let entry = catalog.entries.first(where: {
-                    $0.workspaceID == document.workspaceID
-                }) {
-                    guard entry.fileURL.standardizedFileURL == document.fileURL.standardizedFileURL else {
-                        throw DomainPersistenceError.stateConflict(
-                            expected: catalog.revision,
-                            actual: catalog.revision &+ 1
-                        )
-                    }
-                    return try body(catalog.revision)
-                }
-
-                // A process may die after the create intent/document commit but before catalog
-                // publication. Only that runtime-owned create marker may complete identity here;
-                // an ordinary stale writer can never recreate a deleted/missing catalog entry.
-                guard let diskDocumentBytes = try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                      diskDocumentBytes == document.documentBytes,
-                      let diskDocument = try? DomainWorkspaceDocument.decode(
-                          documentBytes: diskDocumentBytes,
-                          fileURL: document.fileURL
-                      ),
-                      diskDocument.workspaceID == document.workspaceID
-                else {
-                    throw DomainPersistenceError.stateConflict(
-                        expected: catalog.revision,
-                        actual: catalog.revision &+ 1
-                    )
-                }
-                let recovered = try readCurrentJournalOrSeed(
-                    document: diskDocument,
-                    validator: validator
-                )
-                guard case let .present(_, rawJournalBytes) = recovered.raw else {
-                    throw DomainPersistenceError.stateConflict(
-                        expected: catalog.revision,
-                        actual: catalog.revision &+ 1
-                    )
-                }
-                let rawCatalogBytes: Data? = switch catalogSnapshot.raw {
-                case .absent: nil
-                case let .present(_, bytes): bytes
-                }
-                let transaction = try validator.beginCreateRecoveryTransaction(
-                    rawCatalogBytes: rawCatalogBytes,
-                    effectiveCatalog: catalogValidation,
-                    rawJournalBytes: rawJournalBytes,
-                    effectiveJournal: recovered.effectiveValidation,
-                    document: diskDocument,
-                    updatedAt: now
-                )
-                defer { transaction.close() }
-                let directive = try transaction.nextDirective()
-                let receipt: DomainWorkspaceCreateCommitReceipt
-                switch directive {
-                case let .publishCatalog(
-                    actionID,
-                    expectedRawDigest,
-                    candidate,
-                    logicalExpectedRevision,
-                    attachedReceipt
-                ):
-                    guard catalogSnapshot.raw.digest == expectedRawDigest else {
-                        throw DomainPersistenceError.journalCorruption()
-                    }
-                    do {
-                        let authorityPermit = try transaction.acquireAuthorityPermit()
-                        defer { authorityPermit.close() }
-                        _ = try writeCatalog(
-                            expected: catalogSnapshot.raw,
-                            candidate: candidate,
-                            logicalExpectedRevision: logicalExpectedRevision,
-                            validator: validator
-                        )
-                    } catch {
-                        let physicalError = error
-                        let report: CoreWorkspaceSaveActionReportV1
-                        if case let DomainPersistenceError.stateConflict(expected, actual) = error {
-                            report = .stateConflict(
-                                actionID: actionID,
-                                expected: expected,
-                                actual: actual
-                            )
-                        } else if error is CancellationError
-                            || error as? DomainPersistenceError == .cancelled
-                            || error as? DomainPersistenceError == .runtimeShutdownRequested
-                        {
-                            report = .cancelled(actionID: actionID)
-                        } else {
-                            report = .writeFailed(actionID: actionID)
-                        }
-                        _ = try? transaction.report(report)
-                        throw physicalError
-                    }
-                    do {
-                        let reported = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: candidate.contentDigest
-                        ))
-                        if case let .committed(committed) = reported {
-                            receipt = committed
-                        } else {
-                            receipt = attachedReceipt
-                        }
-                    } catch {
-                        // The catalog rename is create authority. The attached receipt was fully
-                        // validated before I/O, so runtime loss after rename cannot manufacture a
-                        // false failed retry.
-                        receipt = attachedReceipt
-                    }
-                case let .committed(committed):
-                    receipt = committed
-                case let .failed(failure):
-                    switch failure {
-                    case .cancelled:
-                        throw DomainPersistenceError.cancelled
-                    case let .stateConflict(expected, actual):
-                        throw DomainPersistenceError.stateConflict(
-                            expected: expected,
-                            actual: actual
-                        )
-                    case .writeFailed:
-                        throw DomainPersistenceError.writeFailed(
-                            "workspace_create_recovery_transaction_write_failed"
-                        )
-                    }
-                case .writePendingJournal,
-                     .publishWorkspaceDocument,
-                     .writeCommittedJournal,
-                     .writeSavedRevision,
-                     .removeDeletionSidecar:
-                    throw DomainPersistenceError.journalCorruption()
-                }
-                return try body(receipt.catalog.catalog.revision)
-            }
-        }
-    }
-
     private func readCatalogBytes() throws -> Data? {
         let descriptor: Int32 = catalogURL.withUnsafeFileSystemRepresentation { path in
             guard let path else { return -1 }
@@ -3898,81 +1932,21 @@ package struct DomainPersistenceCoordinator {
         validator: DomainWorkspaceRustJournal.PreparedValidator
     ) throws -> ValidatedCatalogSnapshot {
         if let bytes = try readCatalogBytes() {
-            return ValidatedCatalogSnapshot(
+            return try ValidatedCatalogSnapshot(
                 raw: .present(
                     digest: DomainContentDigest.sha256(bytes),
                     bytes: bytes
                 ),
-                validation: try validator.validateCatalog(bytes)
+                validation: validator.validateCatalog(bytes)
             )
         }
-        return ValidatedCatalogSnapshot(
+        return try ValidatedCatalogSnapshot(
             raw: .absent,
-            validation: try seedLegacyCatalog(
+            validation: seedLegacyCatalog(
                 entries: legacyCatalogEntries(),
                 updatedAt: now,
                 validator: validator
             )
-        )
-    }
-
-    @discardableResult
-    private func writeCatalog(
-        expected: RawCatalogSnapshot,
-        candidate: DomainWorkspaceCatalogValidation,
-        logicalExpectedRevision: UInt64,
-        validator: DomainWorkspaceRustJournal.PreparedValidator
-    ) throws -> CatalogWriteReceipt {
-        #if DEBUG
-            let directorySyncTestHook = Self.takeCatalogDirectorySyncTestHook(for: catalogURL)
-        #else
-            let directorySyncTestHook: (@Sendable () throws -> Void)? = nil
-        #endif
-        let writeReceipt = try DomainPersistenceLock.atomicWrite(
-            candidate.canonicalBytes,
-            to: catalogURL,
-            validateBeforeReplace: {
-                #if DEBUG
-                    try Self.takeCatalogReplacementTestHook(for: catalogURL)?()
-                #endif
-                let currentBytes = try readCatalogBytes()
-                let current: RawCatalogSnapshot = if let currentBytes {
-                    .present(
-                        digest: DomainContentDigest.sha256(currentBytes),
-                        bytes: currentBytes
-                    )
-                } else {
-                    .absent
-                }
-                let matches = switch (expected, current) {
-                case (.absent, .absent):
-                    true
-                case let (.present(expectedDigest, _), .present(currentDigest, _)):
-                    expectedDigest == currentDigest
-                default:
-                    false
-                }
-                guard matches else {
-                    let actualRevision: UInt64 = switch current {
-                    case .absent:
-                        0
-                    case let .present(_, bytes):
-                        try validator.validateCatalog(bytes).catalog.revision
-                    }
-                    throw DomainPersistenceError.stateConflict(
-                        expected: logicalExpectedRevision,
-                        actual: actualRevision
-                    )
-                }
-            },
-            beforeDirectorySync: directorySyncTestHook
-        )
-        return CatalogWriteReceipt(
-            raw: .present(
-                digest: candidate.contentDigest,
-                bytes: candidate.canonicalBytes
-            ),
-            directorySyncWarning: writeReceipt.directorySyncWarning
         )
     }
 
@@ -4017,17 +1991,7 @@ package struct DomainPersistenceCoordinator {
                         now: Date(timeIntervalSinceReferenceDate: 0),
                         validator: validator
                     )
-                    switch catalogSnapshot.raw {
-                    case .absent:
-                        _ = try writeCatalog(
-                            expected: catalogSnapshot.raw,
-                            candidate: catalogSnapshot.validation,
-                            logicalExpectedRevision: 0,
-                            validator: validator
-                        )
-                    case .present:
-                        break
-                    }
+                    _ = catalogSnapshot
                 }
             }
             if !configuration.legacyRuntimeDefaults.isEmpty {

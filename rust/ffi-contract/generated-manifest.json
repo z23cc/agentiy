@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "e38b86c19f1596e26b43e478a49513f255689801939cab4f5f99754cfd4c6434",
-  "bindingChecksum": "22b6cb7cdd96773ae533b94a9d18890b291eedc7109694ff7fdb6a6f5abf37f4",
+  "buildFingerprint": "406500ed79dc4c45917784f56e5f66091d5eb79b7703df54fa17a7dc525ab2f6",
+  "bindingChecksum": "bd65097fec02639f652923f23985db779ec9a7ee3a63afa101623764a5e63b84",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:f001d23927a15e9fb8a39c950721283401781f26162c563538f2fe40b881e855",
+    "rustSourceRevision": "tree:cfadd96b6055c04deabe480a941ace93f263a1ada68939fe00c03064668e84e5",
     "cargoLockDigest": "7b0aaaef31c684b861d19ce9422dcbb414796f78ebdbf61930b5c4f233188709",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "3b530a8b262fd1b3c0c6af2c6a51b70e6b9e2d369d7f8e434b9aa4f7cb369a91",
+  "archiveSha256": "7320f0812b0d759b80f48b65a218d3e81d45407e7ba7cdaccd2c1a69a59da17f",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -199,12 +199,26 @@
     "AgentProviderCodexLifecycleV1.parseCommandExecutionRunningUpdate(string, string) throws -> AgentProviderCodexRunningUpdateV1?",
     "AgentProviderCodexLifecycleV1.sanitizeCommandOutput(string) throws -> string",
     "AgentProviderCodexLifecycleV1.withCommandExecutionRunningStatus(string?, string?, string?) throws -> string",
-    "AgentProviderCodexLifecycleV1.canonicalState() throws -> string"
+    "AgentProviderCodexLifecycleV1.canonicalState() throws -> string",
+    "CoreRuntime.workspaceCreateDirectV1(CoreWorkspaceCreateDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1",
+    "CoreRuntime.workspaceSaveDirectV1(CoreWorkspaceSaveDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1",
+    "CoreRuntime.workspaceDeleteDirectV1(CoreWorkspaceDeleteDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1",
+    "CoreRuntime.workspaceMutateWorkingDirectV1(CoreWorkspaceMutateWorkingDirectRequestV1) throws -> CoreWorkspaceCommandResponseV1",
+    "CoreRuntime.workspaceIsQuarantinedV1(CoreWorkspaceIsQuarantinedRequestV1) throws -> CoreWorkspaceIsQuarantinedResponseV1",
+    "CoreRuntime.workspaceQuarantinedWorkspacesV1(CoreWorkspaceQuarantinedWorkspacesRequestV1) throws -> CoreWorkspaceQuarantinedWorkspacesResponseV1",
+    "CorePreparedWorkspaceCommandAdmissionV1.isWorkspaceQuarantined(string) throws -> bool",
+    "CorePreparedWorkspaceCommandAdmissionV1.quarantinedWorkspaces() throws -> sequence<string>",
+    "CorePreparedWorkspaceCommandAdmissionV1.quarantineReason(string) throws -> string?",
+    "CorePreparedWorkspaceCommandAdmissionV1.quarantineState() throws -> CoreWorkspaceQuarantineStateResponseV1",
+    "CorePreparedWorkspaceCreateTransactionV1.commitDirect(string) throws -> CoreWorkspaceCreateDirectiveResponseV1",
+    "CorePreparedWorkspaceSaveTransactionV1.commitDirect(string) throws -> CoreWorkspaceSaveDirectiveResponseV1",
+    "CorePreparedWorkspaceDeleteTransactionV1.commitDirect(string) throws -> CoreWorkspaceDeleteDirectiveResponseV1",
+    "CorePreparedWorkspaceJournalMutationTransactionV1.commitDirect(string) throws -> CoreWorkspaceJournalMutationDirectiveResponseV1"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "2546c5a8d31384ec10512feeca1f9a5caa963c32ea31a254f2814f658b6ba9d8",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "9c920c72e52238572315b6a3d5043592abca33b8e4e71b1032915285b6241d33",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "75beebc7378caff1984e5a22e7d226f7f55efae2c4720decefbadcbefbe60ca4",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "67abb48ba284e67a8e624be46f99e4466d3119340f8c9049691af74955c3efa2",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "09df27bc17341036dad450a7d6ab89b8ed7291f745f5317b36d5e7c9e49a777b",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "d8d75d5d861fd4a96ae5ccf14f0a064169a2c513efb10bfdcae0814dfb99e03f",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e",
     "rust/crates/proto/src/generated/agent_host_v1.rs": "fa19fd8c4c625f82b32429f54cde518987cafdeab113802a34f61513d96e69d6"

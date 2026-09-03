@@ -268,7 +268,7 @@ struct DomainWorkspaceAuthorityClient {
 
 private extension DomainCommandOutcome {
     var isSuccessfulDomainMutation: Bool {
-        disposition == .applied || disposition == .unchanged || disposition == .deduplicated
+        disposition == .applied
     }
 }
 

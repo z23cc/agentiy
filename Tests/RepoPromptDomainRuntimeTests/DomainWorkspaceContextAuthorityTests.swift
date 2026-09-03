@@ -154,7 +154,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             fixture.workspaceID
         )
         let bootstrapped = try XCTUnwrap(bootstrappedRead)
-        XCTAssertEqual(bootstrapped.workspace.document.contentDigest, DomainContentDigest.sha256(try Data(contentsOf: fixture.workspaceFile)))
+        XCTAssertEqual(bootstrapped.workspace.document.contentDigest, try DomainContentDigest.sha256(Data(contentsOf: fixture.workspaceFile)))
         XCTAssertEqual(bootstrapped.projection.contexts.first?.prompt, "saved")
         XCTAssertGreaterThan(bootstrapped.publicationSequence, 0)
         XCTAssertEqual(bootstrapped.projectionDigest.count, 64)
@@ -451,7 +451,10 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
     }
 
     func testRecreateSameWorkspaceIDClearsDeletionSidecarAcrossRestart() async throws {
-        let fixture = try Fixture.make(includeWorkspace: false)
+        let fixture = try Fixture.make(
+            includeWorkspace: false,
+            workspaceName: "Renamed before deletion"
+        )
         defer { fixture.remove() }
         let runtime = fixture.runtime()
         try await runtime.start()
@@ -486,7 +489,10 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(deleted.disposition, .applied)
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceDirectory.path))
 
-        let recreatedDocument = try fixture.document(prompt: "recreated identity survives restart")
+        let recreatedDocument = try fixture.document(
+            prompt: "recreated identity survives restart",
+            name: "Renamed before deletion"
+        )
         let recreated = await runtime.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedCatalogRevision: deleted.catalogRevision,
@@ -523,13 +529,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(created.disposition, .applied)
         _ = await runtime.shutdown()
 
-        let runtimeRoot = fixture.storageRoot.appendingPathComponent(
-            "DomainRuntime",
-            isDirectory: true
-        )
-        let catalogURL = try XCTUnwrap(try allFiles(below: runtimeRoot).first {
-            $0.lastPathComponent == "workspace-catalog.json"
-        })
+        let catalogURL = fixture.catalogURL
         let interruptedCatalog: [String: Any] = [
             "version": 1,
             "revision": 0,
@@ -568,17 +568,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(created.disposition, .applied)
         _ = await runtime.shutdown()
 
-        let profileRoot = fixture.storageRoot
-            .appendingPathComponent("DomainRuntime", isDirectory: true)
-            .appendingPathComponent("v1", isDirectory: true)
-        let profileDirectory = try XCTUnwrap(
-            FileManager.default.contentsOfDirectory(
-                at: profileRoot,
-                includingPropertiesForKeys: [.isDirectoryKey]
-            ).first
-        )
-        let deletionDirectory = profileDirectory
-            .appendingPathComponent("deletion-tombstones", isDirectory: true)
+        let deletionDirectory = fixture.deletionTombstonesDirectory
         try FileManager.default.createDirectory(
             at: deletionDirectory,
             withIntermediateDirectories: true
@@ -597,7 +587,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             "deletedAt": 41.0
         ], options: [.sortedKeys])
         try orphan.write(
-            to: deletionDirectory.appendingPathComponent("\(fixture.workspaceID.uuidString).json"),
+            to: deletionDirectory.appendingPathComponent("\(fixture.workspaceID.uuidString.lowercased()).json"),
             options: .atomic
         )
 
@@ -614,26 +604,17 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         defer { fixture.remove() }
         let runtime = fixture.runtime()
         try await runtime.start()
-        let created = await runtime.workspaceStore.execute(.init(
+        let created = try await runtime.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedCatalogRevision: 0,
             expectedWorkspaceRevision: 0,
             origin: .standalone,
-            command: .createWorkspace(try fixture.document(prompt: "ambiguous catalog"))
+            command: .createWorkspace(fixture.document(prompt: "ambiguous catalog"))
         ))
         XCTAssertEqual(created.disposition, .applied)
         _ = await runtime.shutdown()
 
-        let profileRoot = fixture.storageRoot
-            .appendingPathComponent("DomainRuntime", isDirectory: true)
-            .appendingPathComponent("v1", isDirectory: true)
-        let profileDirectory = try XCTUnwrap(
-            FileManager.default.contentsOfDirectory(
-                at: profileRoot,
-                includingPropertiesForKeys: [.isDirectoryKey]
-            ).first
-        )
-        let catalogURL = profileDirectory.appendingPathComponent("workspace-catalog.json")
+        let catalogURL = fixture.catalogURL
         var catalog = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any]
         )
@@ -683,8 +664,10 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         _ = await runtime.shutdown()
 
         let journalURL = try XCTUnwrap(
-            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
-                .first { $0.path.contains("working-journals") && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json" }
+            try allFiles(below: fixture.workingJournalsDirectory)
+                .first {
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
+                }
         )
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
@@ -747,11 +730,9 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         ))
         XCTAssertEqual(first.disposition, .applied)
 
-        let lockURL = try XCTUnwrap(try allFiles(
-            below: fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
-        ).first {
-            $0.lastPathComponent == "workspace-\(fixture.workspaceID.uuidString).lock"
-        })
+        try FileManager.default.createDirectory(at: fixture.locksDirectory, withIntermediateDirectories: true)
+        let lockURL = fixture.locksDirectory
+            .appendingPathComponent("workspace-\(fixture.workspaceID.uuidString.lowercased()).lock")
         let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         XCTAssertGreaterThanOrEqual(descriptor, 0)
         guard descriptor >= 0 else { return }
@@ -798,12 +779,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(seeded.disposition, .applied)
         let snapshot = await runtime.workspaceStore.snapshot()
         let workspace = try XCTUnwrap(snapshot.workspaces.first)
-        let runtimeFiles = try allFiles(
-            below: fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
-        )
-        let catalogURL = try XCTUnwrap(runtimeFiles.first {
-            $0.lastPathComponent == "workspace-catalog.json"
-        })
+        let catalogURL = fixture.catalogURL
         let originalCatalogBytes = try Data(contentsOf: catalogURL)
         let catalogObject = try JSONSerialization.jsonObject(with: originalCatalogBytes)
         let externallyReplacedBytes = try JSONSerialization.data(
@@ -872,12 +848,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
 
         let snapshot = await runtime.workspaceStore.snapshot()
         let workspace = try XCTUnwrap(snapshot.workspaces.first)
-        let runtimeFiles = try allFiles(
-            below: fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
-        )
-        let catalogURL = try XCTUnwrap(runtimeFiles.first {
-            $0.lastPathComponent == "workspace-catalog.json"
-        })
+        let catalogURL = fixture.catalogURL
         let originalCatalogBytes = try Data(contentsOf: catalogURL)
         let catalogObject = try JSONSerialization.jsonObject(with: originalCatalogBytes)
         let externallyReplacedBytes = try JSONSerialization.data(
@@ -982,22 +953,19 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(working.disposition, .applied)
         let snapshot = await runtime.workspaceStore.snapshot()
         let workspace = try XCTUnwrap(snapshot.workspaces.first)
-        let runtimeRoot = fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
-        let runtimeFiles = try allFiles(below: runtimeRoot)
-        let catalogURL = try XCTUnwrap(runtimeFiles.first {
-            $0.lastPathComponent == "workspace-catalog.json"
-        })
-        let journalURL = try XCTUnwrap(runtimeFiles.first {
-            $0.path.contains("working-journals")
-                && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
-        })
+        let catalogURL = fixture.catalogURL
+        let journalURL = try XCTUnwrap(
+            try allFiles(below: fixture.workingJournalsDirectory).first {
+                $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
+            }
+        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.workspaceFile.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: journalURL.path))
-        DomainPersistenceCoordinator.setCatalogDirectorySyncTestHook(for: catalogURL) {
+        DomainWorkspaceStore.setCatalogDirectorySyncTestHook(for: catalogURL) {
             throw DomainPersistenceError.writeFailed("injected_directory_fsync_failure")
         }
         defer {
-            DomainPersistenceCoordinator.setCatalogDirectorySyncTestHook(for: catalogURL, nil)
+            DomainWorkspaceStore.setCatalogDirectorySyncTestHook(for: catalogURL, nil)
         }
 
         let deleted = await runtime.workspaceStore.execute(.init(
@@ -1039,10 +1007,12 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(outcome.disposition, .applied)
         XCTAssertEqual(outcome.after, .init(workingRevision: 1, savedRevision: 0, dirtyRevision: 1))
         XCTAssertEqual(try Data(contentsOf: fixture.workspaceFile), original)
-        let runtimeFiles = try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
-        XCTAssertTrue(runtimeFiles.contains { $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json" })
-        XCTAssertTrue(runtimeFiles.contains { $0.lastPathComponent == "manifest.json" })
-        XCTAssertTrue(runtimeFiles.contains { $0.lastPathComponent == "legacy-runtime-defaults.json" })
+        let journalPath = fixture.storageRoot
+            .appendingPathComponent("Workspaces", isDirectory: true)
+            .appendingPathComponent(".agentry-domain-runtime", isDirectory: true)
+            .appendingPathComponent("working-journals", isDirectory: true)
+            .appendingPathComponent("\(fixture.workspaceID.uuidString.lowercased()).json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journalPath.path))
     }
 
     func testExplicitSaveAdvancesSavedRevisionAndRestartRecoversDirtyWorkingState() async throws {
@@ -1141,12 +1111,12 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         defer { fixture.remove() }
         let runtime = fixture.runtime()
         try await runtime.start()
-        let envelope = DomainWorkspaceCommandEnvelope(
+        let envelope = try DomainWorkspaceCommandEnvelope(
             operationID: UUID(),
             expectedCatalogRevision: 0,
             expectedWorkspaceRevision: 0,
             origin: .standalone,
-            command: .createWorkspace(try fixture.document(prompt: "single executor"))
+            command: .createWorkspace(fixture.document(prompt: "single executor"))
         )
 
         async let first = runtime.workspaceStore.execute(envelope)
@@ -1156,8 +1126,8 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         let outcomeSummary = outcomes.map {
             "\($0.disposition.rawValue):\($0.errorCode?.rawValue ?? "nil"):\($0.diagnostic ?? "nil")"
         }.joined(separator: ", ")
-        XCTAssertEqual(outcomes.filter { $0.disposition == .applied }.count, 1, outcomeSummary)
-        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1, outcomeSummary)
+        XCTAssertEqual(outcomes.count(where: { $0.disposition == .applied }), 1, outcomeSummary)
+        XCTAssertEqual(outcomes.count(where: { $0.disposition == .deduplicated }), 1, outcomeSummary)
         XCTAssertEqual(outcomes[0].resultingDigest, outcomes[1].resultingDigest, outcomeSummary)
         let restarted = fixture.runtime(runtimeID: UUID(), generation: 2)
         _ = await runtime.shutdown()
@@ -1172,19 +1142,19 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         defer { fixture.remove() }
         let runtime = fixture.runtime()
         try await runtime.start()
-        let envelope = DomainWorkspaceCommandEnvelope(
+        let envelope = try DomainWorkspaceCommandEnvelope(
             operationID: UUID(),
             expectedWorkspaceRevision: 99,
             origin: .standalone,
-            command: .replaceWorkingDocument(try fixture.document(prompt: "must conflict"))
+            command: .replaceWorkingDocument(fixture.document(prompt: "must conflict"))
         )
 
         async let first = runtime.workspaceStore.execute(envelope)
         async let second = runtime.workspaceStore.execute(envelope)
         let outcomes = await [first, second]
 
-        XCTAssertEqual(outcomes.filter { $0.disposition == .conflict }.count, 1)
-        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1)
+        XCTAssertEqual(outcomes.count(where: { $0.disposition == .conflict }), 1)
+        XCTAssertEqual(outcomes.count(where: { $0.disposition == .deduplicated }), 1)
         XCTAssertEqual(outcomes[0].errorCode, .stateConflict)
         XCTAssertEqual(outcomes[1].errorCode, .stateConflict)
         XCTAssertEqual(outcomes[0].diagnostic, "workspace_revision_mismatch")
@@ -1365,10 +1335,9 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(reconciled.document.documentBytes, local.documentBytes)
 
         let journalURL = try XCTUnwrap(
-            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
+            try allFiles(below: fixture.workingJournalsDirectory)
                 .first {
-                    $0.path.contains("working-journals")
-                        && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
                 }
         )
         let journal = try JSONDecoder().decode(
@@ -1611,15 +1580,15 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
     func testDuplicateCatalogAndContextIDsDegradeInsteadOfTrapping() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
-        let indexURL = fixture.storageRoot
-            .appendingPathComponent("Workspaces", isDirectory: true)
-            .appendingPathComponent("workspacesIndex.json")
-        var index = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [[String: Any]]
+        let catalogURL = fixture.catalogURL
+        var catalogObject = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any]
         )
-        try index.append(XCTUnwrap(index.first))
-        try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys])
-            .write(to: indexURL, options: .atomic)
+        var entries = try XCTUnwrap(catalogObject["entries"] as? [[String: Any]])
+        try entries.append(XCTUnwrap(entries.first))
+        catalogObject["entries"] = entries
+        try JSONSerialization.data(withJSONObject: catalogObject, options: [.sortedKeys])
+            .write(to: catalogURL, options: .atomic)
 
         let runtime = fixture.runtime()
         try await runtime.start()
@@ -1690,10 +1659,9 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         _ = await runtime.shutdown()
 
         let journalURL = try XCTUnwrap(
-            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
+            try allFiles(below: fixture.workingJournalsDirectory)
                 .first {
-                    $0.path.contains("working-journals")
-                        && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
                 }
         )
         let decoder = JSONDecoder()
@@ -1745,10 +1713,9 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         _ = await runtime.shutdown()
 
         let journalURL = try XCTUnwrap(
-            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
+            try allFiles(below: fixture.workingJournalsDirectory)
                 .first {
-                    $0.path.contains("working-journals")
-                        && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
                 }
         )
         try Data("{\"version\":1".utf8).write(to: journalURL, options: .atomic)
@@ -1760,14 +1727,14 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         let bootstrap = await persistence.bootstrap()
         let semanticRecovery = try XCTUnwrap(bootstrap.semanticRecovery)
         let semanticPreview = try XCTUnwrap(bootstrap.semanticPreview)
-        XCTAssertEqual(semanticPreview.admissionDisposition, .quarantined)
+        XCTAssertEqual(semanticPreview.admissionDisposition, .installed)
         XCTAssertEqual(
             bootstrap.health,
-            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+            .writable
         )
         let commit = try semanticRecovery.commit(expected: semanticPreview)
-        XCTAssertNil(commit.admission)
-        XCTAssertNil(commit.admissionReceipt)
+        XCTAssertNotNil(commit.admission)
+        XCTAssertNotNil(commit.admissionReceipt)
         XCTAssertEqual(
             try XCTUnwrap(bootstrap.workspaces.first).admissionJournalEvidence,
             .unavailable
@@ -1799,10 +1766,9 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         ))
         _ = await runtime.shutdown()
         let journal = try XCTUnwrap(
-            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
+            try allFiles(below: fixture.workingJournalsDirectory)
                 .first {
-                    $0.path.contains("working-journals")
-                        && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
                 }
         )
         var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: journal)) as? [String: Any])
@@ -1816,10 +1782,10 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         // The saved semantic document remains isolated and readable, but a future journal may hide
         // process-global operation IDs. Admission therefore quarantines mutation globally rather
         // than fabricating an authoritative empty ledger for this workspace.
-        XCTAssertEqual(runtimeSnapshot.lifecycle, .degraded)
+        XCTAssertEqual(runtimeSnapshot.lifecycle, .ready)
         XCTAssertEqual(
             runtimeSnapshot.workspaceHealth,
-            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+            .writable
         )
         XCTAssertEqual(workspace?.document.documentBytes, try Data(contentsOf: fixture.workspaceFile))
         XCTAssertEqual(workspace?.health, .degradedReadOnly(reason: "future_working_journal"))
@@ -1830,8 +1796,88 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             command: .replaceWorkingDocument(fixture.document(prompt: "must not apply"))
         ))
         XCTAssertEqual(rejected.disposition, .readOnly)
-        XCTAssertEqual(rejected.errorCode, .runtimeReadOnlyDegraded)
-        XCTAssertEqual(rejected.diagnostic, "canonical_storage_reconciliation_failed")
+        XCTAssertEqual(rejected.errorCode, .workspaceReadOnlyDegraded)
+        XCTAssertEqual(rejected.diagnostic, "future_working_journal")
+    }
+
+    func testSingleWorkspaceQuarantineLeavesGlobalHealthWritableAndOtherWorkspacesFunctional() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+
+        // Create a second workspace that remains healthy
+        let secondWorkspaceID = UUID()
+        let secondDir = fixture.workspacesDirectory
+            .appendingPathComponent(
+                DomainWorkspaceStoragePath.directoryName(name: "Healthy Workspace", id: secondWorkspaceID),
+                isDirectory: true
+            )
+        let secondFile = secondDir.appendingPathComponent("workspace.json")
+        let secondDoc = try fixture.document(
+            workspaceID: secondWorkspaceID,
+            contextID: UUID(),
+            fileURL: secondFile,
+            prompt: "Healthy context",
+            name: "Healthy Workspace"
+        )
+        let created = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: nil,
+            origin: .standalone,
+            command: .createWorkspace(secondDoc)
+        ))
+        XCTAssertEqual(created.disposition, .applied)
+
+        // Corrupt the first workspace's working journal
+        _ = try await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(fixture.document(prompt: "journal"))
+        ))
+        _ = await runtime.shutdown()
+
+        let journal = try XCTUnwrap(
+            try allFiles(below: fixture.workingJournalsDirectory)
+                .first {
+                    $0.lastPathComponent.caseInsensitiveCompare("\(fixture.workspaceID.uuidString).json") == .orderedSame
+                }
+        )
+        try Data("corrupted-not-json".utf8).write(to: journal, options: .atomic)
+
+        // Restart and verify global runtime is writable, corrupted workspace is quarantined, healthy workspace is functional
+        let restarted = fixture.runtime(generation: 2)
+        try await restarted.start()
+        let runtimeSnapshot = await restarted.snapshot()
+        XCTAssertEqual(runtimeSnapshot.lifecycle, .ready)
+        XCTAssertEqual(runtimeSnapshot.workspaceHealth, .writable)
+
+        // Corrupted workspace rejects mutations
+        let corruptedRejected = try await restarted.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(fixture.document(prompt: "should fail"))
+        ))
+        XCTAssertNotEqual(corruptedRejected.disposition, .applied)
+
+        // Healthy workspace accepts mutations
+        let secondEditedDoc = try fixture.document(
+            workspaceID: secondWorkspaceID,
+            contextID: UUID(),
+            fileURL: secondFile,
+            prompt: "Healthy context edited",
+            name: "Healthy Workspace"
+        )
+        let secondWorkingRevision = await restarted.workspaceStore.workspaceSnapshot(secondWorkspaceID)?.revisions.workingRevision
+        let healthyMutation = await restarted.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: secondWorkingRevision,
+            origin: .standalone,
+            command: .replaceWorkingDocument(secondEditedDoc)
+        ))
+        XCTAssertEqual(healthyMutation.disposition, .applied)
     }
 
     func testTwoWindowCaptureRevisionConflictPreventsLostUpdate() async throws {
@@ -1893,13 +1939,19 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         let runtime = fixture.runtime()
         try await runtime.start()
         let secondID = UUID()
-        let secondURL = fixture.storageRoot
-            .appendingPathComponent("Workspaces/Workspace-Second-\(secondID.uuidString)/workspace.json")
+        let secondName = "Second"
+        let secondURL = fixture.workspacesDirectory
+            .appendingPathComponent(
+                DomainWorkspaceStoragePath.directoryName(name: secondName, id: secondID),
+                isDirectory: true
+            )
+            .appendingPathComponent("workspace.json")
         let secondDocument = try fixture.document(
             workspaceID: secondID,
             contextID: UUID(),
             fileURL: secondURL,
-            prompt: "second workspace"
+            prompt: "second workspace",
+            name: secondName
         )
         let created = await runtime.workspaceStore.execute(.init(
             operationID: UUID(),
@@ -1913,8 +1965,8 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
 
         // Simulate an unplugged volume: the document and its journal are unreachable.
         try FileManager.default.removeItem(at: secondURL)
-        for journal in try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
-            where journal.lastPathComponent == "\(secondID.uuidString).json"
+        for journal in try allFiles(below: fixture.workingJournalsDirectory)
+            where journal.lastPathComponent.caseInsensitiveCompare("\(secondID.uuidString).json") == .orderedSame
         {
             try FileManager.default.removeItem(at: journal)
         }
@@ -1965,7 +2017,8 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
                 workspaceID: secondID,
                 contextID: UUID(),
                 fileURL: secondURL,
-                prompt: "second workspace edited"
+                prompt: "second workspace edited",
+                name: secondName
             ))
         ))
         XCTAssertEqual(applied.disposition, .applied)
@@ -2411,6 +2464,34 @@ private struct Fixture {
     let workspaceName: String
     let workspaceFile: URL
 
+    var workspacesDirectory: URL {
+        storageRoot.appendingPathComponent("Workspaces", isDirectory: true)
+    }
+
+    var canonicalRuntimeRoot: URL {
+        workspacesDirectory.appendingPathComponent(".agentry-domain-runtime", isDirectory: true)
+    }
+
+    var workingJournalsDirectory: URL {
+        canonicalRuntimeRoot.appendingPathComponent("working-journals", isDirectory: true)
+    }
+
+    var catalogURL: URL {
+        canonicalRuntimeRoot.appendingPathComponent("workspace-catalog.json")
+    }
+
+    var deletionTombstonesDirectory: URL {
+        canonicalRuntimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true)
+    }
+
+    var revisionsDirectory: URL {
+        canonicalRuntimeRoot.appendingPathComponent("revisions", isDirectory: true)
+    }
+
+    var locksDirectory: URL {
+        canonicalRuntimeRoot.appendingPathComponent("locks", isDirectory: true)
+    }
+
     static func make(
         includeWorkspace: Bool = true,
         workspaceName: String = "Fixture"
@@ -2438,11 +2519,73 @@ private struct Fixture {
         if includeWorkspace {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try fixture.document(prompt: "saved").documentBytes.write(to: workspaceFile)
-        }
-        if includeWorkspace {
             try fixture.writeLegacyIndex()
+            try fixture.writeCanonicalRuntime()
         }
         return fixture
+    }
+
+    func writeCanonicalRuntime(
+        workingRevision: UInt64 = 0,
+        savedRevision: UInt64 = 0,
+        dirtyRevision: UInt64? = nil
+    ) throws {
+        let workspaceRoot = storageRoot.appendingPathComponent("Workspaces", isDirectory: true)
+        let runtimeRoot = workspaceRoot.appendingPathComponent(".agentry-domain-runtime", isDirectory: true)
+        let journalsDir = runtimeRoot.appendingPathComponent("working-journals", isDirectory: true)
+        let revisionsDir = runtimeRoot.appendingPathComponent("revisions", isDirectory: true)
+        let deletionsDir = runtimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true)
+        let locksDir = runtimeRoot.appendingPathComponent("locks", isDirectory: true)
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: journalsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: revisionsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: deletionsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: locksDir, withIntermediateDirectories: true)
+
+        let catalog: [String: Any] = [
+            "version": 1,
+            "revision": 0,
+            "entries": [
+                [
+                    "workspaceID": workspaceID.uuidString.lowercased(),
+                    "fileURL": workspaceFile.absoluteString
+                ]
+            ],
+            "deletions": [] as [Any],
+            "updatedAt": 0.0
+        ]
+        let catalogData = try JSONSerialization.data(withJSONObject: catalog, options: [.sortedKeys])
+        try catalogData.write(to: runtimeRoot.appendingPathComponent("workspace-catalog.json"))
+
+        let docDigest = try document(prompt: "saved").contentDigest
+        var revs: [String: Any] = [
+            "workingRevision": workingRevision,
+            "savedRevision": savedRevision
+        ]
+        if let dirtyRevision {
+            revs["dirtyRevision"] = dirtyRevision
+        } else {
+            revs["dirtyRevision"] = NSNull()
+        }
+
+        let journal: [String: Any] = [
+            "version": 1,
+            "workspaceID": workspaceID.uuidString.lowercased(),
+            "fileURL": workspaceFile.absoluteString,
+            "revisions": revs,
+            "savedDigest": docDigest,
+            "workingDocument": NSNull(),
+            "contextRevisions": [:] as [String: Any],
+            "contextDigests": [:] as [String: Any],
+            "contextTombstones": [:] as [String: Any],
+            "operations": [] as [Any],
+            "pendingSave": NSNull(),
+            "updatedAt": 0.0
+        ]
+        let journalData = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+        try journalData.write(to: journalsDir.appendingPathComponent("\(workspaceID.uuidString.lowercased()).json"))
     }
 
     func writeLegacyIndex() throws {

@@ -2266,6 +2266,10 @@ pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
     StaleRecoverySnapshot,
     FullRecoveryRequired,
     InvalidTransaction,
+    WorkspaceQuarantined,
+    PersistenceIoError,
+    UnsupportedCatalogSchemaVersion,
+    StorageLeaseRequired,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -2273,6 +2277,121 @@ pub struct CoreWorkspaceWorkingJournalValidationResponseV1 {
     pub validation: Option<CoreWorkspaceWorkingJournalValidationV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCreateDirectRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub document_bytes: Vec<u8>,
+    pub expected_catalog_revision: u64,
+    pub operation_id: String,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSaveDirectRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+    pub workspace_id: String,
+    pub document_bytes: Vec<u8>,
+    pub expected_working_revision: u64,
+    pub expected_catalog_revision: u64,
+    pub operation_id: String,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDeleteDirectRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+    pub workspace_id: String,
+    pub expected_catalog_revision: u64,
+    pub operation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceMutateWorkingDirectRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+    pub workspace_id: String,
+    pub candidate_document_bytes: Vec<u8>,
+    pub expected_working_revision: u64,
+    pub operation_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandResponseV1 {
+    pub result: Option<CoreWorkspaceCommandResultV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceIsQuarantinedRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+    pub workspace_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceIsQuarantinedResponseV1 {
+    pub is_quarantined: bool,
+    pub reason: Option<String>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceQuarantinedWorkspacesRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub storage_directory: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceQuarantineEntryV1 {
+    pub workspace_id: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceQuarantinedWorkspacesResponseV1 {
+    pub entries: Vec<CoreWorkspaceQuarantineEntryV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceQuarantineStateResponseV1 {
+    pub entries: Vec<CoreWorkspaceQuarantineEntryV1>,
+    pub global_health: CoreWorkspaceProjectionHealthV1,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceQuarantineEntryV1>
+    for CoreWorkspaceQuarantineEntryV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceQuarantineEntryV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            reason: value.reason,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceQuarantineStateV1>
+    for CoreWorkspaceQuarantineStateResponseV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceQuarantineStateV1) -> Self {
+        Self {
+            entries: value.entries.into_iter().map(Into::into).collect(),
+            global_health: value.global_health.into(),
+        }
+    }
 }
 
 impl From<runtime::workspace_persistence_journal::WorkspaceCatalogValidationV1>

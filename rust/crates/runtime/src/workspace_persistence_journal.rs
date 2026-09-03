@@ -19,10 +19,11 @@ use crate::workspace_context::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 pub const WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1: u16 = 1;
 pub const WORKSPACE_SEMANTIC_PLANNER_VERSION_V1: u16 = 1;
@@ -39,7 +40,7 @@ pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1: usize = 4096;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1: usize = 65_536;
-pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1: usize = 256 * 1024 * 1024;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_CLAIM_COUNT_V1: usize = 4_096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,6 +240,11 @@ pub enum WorkspaceWorkingJournalError {
     StaleRecoverySnapshot,
     FullRecoveryRequired,
     InvalidTransaction,
+    WorkspaceQuarantined(String),
+    PersistenceIoError(String),
+    UnsupportedCatalogSchemaVersion { actual: u16, max_supported: u16 },
+    StorageLeaseRequired,
+    StateConflict { expected: u64, actual: u64 },
 }
 
 impl fmt::Display for WorkspaceWorkingJournalError {
@@ -263,28 +269,28 @@ impl fmt::Display for WorkspaceWorkingJournalError {
             }
             Self::InvalidIdentity => formatter.write_str("workspace journal identity is invalid"),
             Self::DuplicateCatalogIdentity => {
-                formatter.write_str("workspace catalog contains a duplicate identity")
+                formatter.write_str("workspace catalog identity is duplicated")
             }
-            Self::InvalidFileUrl => formatter.write_str("workspace journal file URL is invalid"),
+            Self::InvalidFileUrl => formatter.write_str("workspace file URL is invalid"),
             Self::InvalidRevisionState => {
                 formatter.write_str("workspace journal revision state is invalid")
             }
-            Self::InvalidDigest => formatter.write_str("workspace journal digest is invalid"),
+            Self::InvalidDigest => formatter.write_str("workspace digest is invalid"),
             Self::InvalidWorkingDocument => {
-                formatter.write_str("workspace journal working document is invalid")
+                formatter.write_str("workspace working document is invalid")
             }
             Self::InvalidContextTable => {
-                formatter.write_str("workspace journal context table is invalid")
+                formatter.write_str("workspace context table is invalid")
             }
             Self::InvalidOperationLedger => {
-                formatter.write_str("workspace journal operation ledger is invalid")
+                formatter.write_str("workspace operation ledger is invalid")
             }
             Self::InvalidPendingSave => {
-                formatter.write_str("workspace journal pending save is invalid")
+                formatter.write_str("workspace pending save is invalid")
             }
-            Self::InvalidTimestamp => formatter.write_str("workspace journal timestamp is invalid"),
+            Self::InvalidTimestamp => formatter.write_str("workspace timestamp is invalid"),
             Self::ExternalDocumentConflict => {
-                formatter.write_str("workspace document changed outside the transaction")
+                formatter.write_str("workspace external document conflict")
             }
             Self::StaleRecoverySnapshot => {
                 formatter.write_str("workspace admission recovery snapshot is stale")
@@ -294,6 +300,27 @@ impl fmt::Display for WorkspaceWorkingJournalError {
             }
             Self::InvalidTransaction => {
                 formatter.write_str("workspace save transaction is invalid")
+            }
+            Self::WorkspaceQuarantined(reason) => {
+                write!(formatter, "workspace is quarantined: {reason}")
+            }
+            Self::PersistenceIoError(message) => {
+                write!(formatter, "persistence io error: {message}")
+            }
+            Self::UnsupportedCatalogSchemaVersion { actual, max_supported } => {
+                write!(
+                    formatter,
+                    "unsupported catalog schema version {actual}; maximum supported is {max_supported}"
+                )
+            }
+            Self::StorageLeaseRequired => {
+                formatter.write_str("storage lease required for workspace mutation")
+            }
+            Self::StateConflict { expected, actual } => {
+                write!(
+                    formatter,
+                    "state conflict: expected revision {expected}, actual revision {actual}"
+                )
             }
         }
     }
@@ -490,6 +517,20 @@ pub struct WorkspaceRecordedOperationV1 {
     pub diagnostic: Option<String>,
 }
 
+impl WorkspaceRecordedOperationV1 {
+    pub fn matches_authoritative_history(&self, other: &Self) -> bool {
+        self.operation_id == other.operation_id
+            && self.fingerprint == other.fingerprint
+            && self.disposition == other.disposition
+            && self.before == other.before
+            && self.after == other.after
+            && self.catalog_revision == other.catalog_revision
+            && self.resulting_digest == other.resulting_digest
+            && self.error_code == other.error_code
+            && self.diagnostic == other.diagnostic
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceCommandAdmissionLookupScopeV1 {
     Workspace,
@@ -566,6 +607,20 @@ pub struct WorkspaceCommandAdmissionRecoveryV1 {
     pub catalog_bytes: Vec<u8>,
     pub journals: Vec<WorkspaceCommandAdmissionJournalRecoveryV1>,
     pub deletion_sidecars: Vec<WorkspaceCommandAdmissionDeletionRecoveryV1>,
+    pub quarantined_workspaces: HashSet<String>,
+    pub quarantine_reasons: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceQuarantineEntryV1 {
+    pub workspace_id: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceQuarantineStateV1 {
+    pub entries: Vec<WorkspaceQuarantineEntryV1>,
+    pub global_health: WorkspaceProjectionHealth,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1148,12 +1203,12 @@ impl WorkspaceCommandAdmissionStateV1 {
         if self
             .global
             .get(operation_id)
-            .is_some_and(|existing| existing != &operation)
+            .is_some_and(|existing| !existing.matches_authoritative_history(&operation))
             || workspace_id.as_ref().is_some_and(|workspace_id| {
                 self.workspaces
                     .get(workspace_id)
                     .and_then(|index| index.get(operation_id))
-                    .is_some_and(|existing| existing != &operation)
+                    .is_some_and(|existing| !existing.matches_authoritative_history(&operation))
             })
         {
             return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
@@ -1663,7 +1718,8 @@ struct WorkspaceCommandAdmissionInnerV1 {
     authority_snapshot: Arc<WorkspaceProjectionSnapshot>,
     authority_publication: WorkspaceProjectionPublicationState,
     authority_projection_digest: String,
-    quarantined: bool,
+    quarantined_workspaces: HashSet<String>,
+    quarantine_reasons: HashMap<String, String>,
     closed: bool,
 }
 
@@ -1673,7 +1729,12 @@ fn apply_workspace_authority_publication_candidate_v1(
     candidate: &WorkspaceAuthorityPublicationCandidateV1,
     expected_head: Option<&WorkspaceAuthorityPublicationHeadV1>,
 ) -> Result<WorkspaceAuthorityPublicationReceiptV1, WorkspaceWorkingJournalError> {
-    if inner.closed || inner.quarantined {
+    if inner.closed
+        || candidate
+            .workspace_id
+            .as_deref()
+            .is_some_and(|id| inner.quarantined_workspaces.contains(id))
+    {
         return Err(WorkspaceWorkingJournalError::InvalidTransaction);
     }
     match expected_head {
@@ -2329,6 +2390,16 @@ fn deletion_diagnostic_matches(candidate: &Option<String>, authoritative: &Optio
     })
 }
 
+fn timestamps_match(left: &Value, right: &Value) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.as_f64(), right.as_f64()) {
+        (Some(l), Some(r)) => (l - r).abs() < 0.001,
+        _ => false,
+    }
+}
+
 fn recovered_deletion_record(
     authoritative: &WorkspaceDeletionTombstoneV1,
     sidecar_bytes: Option<&[u8]>,
@@ -2341,13 +2412,13 @@ fn recovered_deletion_record(
         let mut normalized_sidecar = sidecar.clone();
         let diagnostic = normalized_sidecar.operation.diagnostic.clone();
         normalized_sidecar.operation.diagnostic = authoritative.operation.diagnostic.clone();
-        if normalized_sidecar.version != authoritative.version
-            || normalized_sidecar.workspace_id != authoritative.workspace_id
-            || normalized_sidecar.file_url != authoritative.file_url
-            || normalized_sidecar.deleted_at != authoritative.deleted_at
-            || normalized_sidecar.operation != authoritative.operation
-            || !deletion_diagnostic_matches(&diagnostic, &authoritative.operation.diagnostic)
-        {
+        let c1 = normalized_sidecar.version != authoritative.version;
+        let c2 = normalized_sidecar.workspace_id != authoritative.workspace_id;
+        let c3 = normalized_sidecar.file_url != authoritative.file_url;
+        let c4 = !timestamps_match(&normalized_sidecar.deleted_at, &authoritative.deleted_at);
+        let c5 = !normalized_sidecar.operation.matches_authoritative_history(&authoritative.operation);
+        let c6 = !deletion_diagnostic_matches(&diagnostic, &authoritative.operation.diagnostic);
+        if c1 || c2 || c3 || c4 || c5 || c6 {
             return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
         }
         sidecar.operation
@@ -2971,7 +3042,7 @@ fn derive_workspace_semantic_recovery_row_v1(
                 },
                 None,
                 None,
-                true,
+                false,
             )),
         },
         WorkspaceRecoveryArtifactEvidenceV1::Unavailable(reason) => Ok((
@@ -3048,7 +3119,7 @@ fn derive_workspace_semantic_recovery_row_v1(
                             ),
                             Some(journal_bytes),
                             rewrite,
-                            true,
+                            false,
                         ));
                     }
                 }
@@ -3102,7 +3173,7 @@ fn derive_workspace_semantic_recovery_row_v1(
                             ),
                             Some(journal_bytes),
                             rewrite,
-                            true,
+                            false,
                         ));
                     };
                     if local_document.digest != pending.document_digest {
@@ -3226,7 +3297,7 @@ fn derive_workspace_semantic_recovery_row_v1(
                             },
                             Some(journal_bytes),
                             rewrite,
-                            true,
+                            false,
                         ));
                     }
                 }
@@ -3367,7 +3438,8 @@ fn derive_semantic_full_recovery_v1(
     let mut journals = Vec::with_capacity(catalog.entries.len());
     let mut deletion_sidecars = Vec::with_capacity(binding.deletions.len());
     let mut rewrites = Vec::new();
-    let mut admission_authoritative = true;
+    let mut quarantined_workspaces = HashSet::new();
+    let mut quarantine_reasons = HashMap::new();
     for entry in &catalog.entries {
         let evidence = workspaces
             .get(&entry.workspace_id)
@@ -3378,6 +3450,14 @@ fn derive_semantic_full_recovery_v1(
                 &entry.file_url,
                 evidence,
             )?;
+        if !authoritative || matches!(&row, WorkspaceSemanticRecoveryRowV1::Unavailable { .. }) {
+            quarantined_workspaces.insert(entry.workspace_id.clone());
+            let reason = match &row {
+                WorkspaceSemanticRecoveryRowV1::Unavailable { row } => row.reason.clone(),
+                _ => "working_journal_unauthoritative".to_string(),
+            };
+            quarantine_reasons.insert(entry.workspace_id.clone(), reason);
+        }
         rows.push(row);
         journals.push(WorkspaceCommandAdmissionJournalRecoveryV1 {
             workspace_id: entry.workspace_id.clone(),
@@ -3386,7 +3466,6 @@ fn derive_semantic_full_recovery_v1(
         if let Some(rewrite) = rewrite {
             rewrites.push(rewrite);
         }
-        admission_authoritative &= authoritative;
     }
     for deletion in catalog.deletions.as_deref().unwrap_or_default() {
         let evidence = deletions
@@ -3424,19 +3503,9 @@ fn derive_semantic_full_recovery_v1(
         };
         left_id.cmp(right_id)
     });
-    let admission_disposition = if admission_authoritative {
-        WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
-    } else {
-        WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
-    };
-    let global_health = if admission_authoritative {
-        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None)
-    } else {
-        workspace_recovery_health_v1(
-            WorkspaceProjectionHealthKind::DegradedReadOnly,
-            Some("working_journal_recovery_unavailable".to_owned()),
-        )
-    };
+    let admission_disposition = WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed;
+    let global_health =
+        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None);
     let projection = WorkspaceSemanticRecoveryProjectionV1::Full { rows };
     let projection_digest = semantic_recovery_projection_digest_v1(
         binding.revision,
@@ -3458,10 +3527,12 @@ fn derive_semantic_full_recovery_v1(
             journal_rewrites: rewrites,
             projection_digest,
         },
-        admission_authoritative.then_some(WorkspaceCommandAdmissionRecoveryV1 {
+        Some(WorkspaceCommandAdmissionRecoveryV1 {
             catalog_bytes: recovery.catalog_bytes.clone(),
             journals,
             deletion_sidecars,
+            quarantined_workspaces,
+            quarantine_reasons,
         }),
     ))
 }
@@ -3570,14 +3641,8 @@ fn derive_semantic_target_recovery_v1(
     } else {
         WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
     };
-    let global_health = if authoritative {
-        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None)
-    } else {
-        workspace_recovery_health_v1(
-            WorkspaceProjectionHealthKind::DegradedReadOnly,
-            Some("working_journal_recovery_unavailable".to_owned()),
-        )
-    };
+    let global_health =
+        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None);
     let projection = WorkspaceSemanticRecoveryProjectionV1::Target { directive };
     let projection_digest = semantic_recovery_projection_digest_v1(
         binding.revision,
@@ -3792,7 +3857,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     authority_snapshot,
                     authority_publication: WorkspaceProjectionPublicationState::default(),
                     authority_projection_digest,
-                    quarantined: false,
+                    quarantined_workspaces: recovery.quarantined_workspaces.clone(),
+                    quarantine_reasons: recovery.quarantine_reasons.clone(),
                     closed: false,
                 })),
             },
@@ -3819,7 +3885,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 authority_snapshot,
                 authority_publication: WorkspaceProjectionPublicationState::default(),
                 authority_projection_digest,
-                quarantined: false,
+                quarantined_workspaces: HashSet::new(),
+                quarantine_reasons: HashMap::new(),
                 closed: false,
             })),
         })
@@ -3897,7 +3964,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             if current
                 .global
                 .get(&operation.operation_id)
-                .is_some_and(|existing| existing != operation)
+                .is_some_and(|existing| !existing.matches_authoritative_history(operation))
             {
                 return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
             }
@@ -3918,7 +3985,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         state.state = Some(replacement);
         state.catalog_binding = Some(catalog_binding.clone());
-        state.quarantined = false;
+        state.quarantined_workspaces = recovery.quarantined_workspaces.clone();
+        state.quarantine_reasons = recovery.quarantine_reasons.clone();
         for operation_id in terminalized_claims {
             state.claims.remove(&operation_id);
         }
@@ -3934,7 +4002,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         &self,
         catalog_bytes: &[u8],
     ) -> Result<(), WorkspaceWorkingJournalError> {
-        let (_, _, catalog_binding) = validated_recovery_catalog(catalog_bytes)?;
+        let (_, catalog, catalog_binding) = validated_recovery_catalog(catalog_bytes)?;
         let mut inner = self
             .inner
             .lock()
@@ -3955,7 +4023,12 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .as_ref()
             .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
         inner.catalog_binding = Some(catalog_binding);
-        inner.quarantined = true;
+        for entry in catalog.entries {
+            inner.quarantined_workspaces.insert(entry.workspace_id.clone());
+            inner
+                .quarantine_reasons
+                .insert(entry.workspace_id, "full_recovery_quarantined".to_string());
+        }
         Ok(())
     }
 
@@ -3987,7 +4060,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             if current
                 .global
                 .get(&operation.operation_id)
-                .is_some_and(|existing| existing != operation)
+                .is_some_and(|existing| !existing.matches_authoritative_history(operation))
             {
                 return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
             }
@@ -4094,7 +4167,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed || inner.quarantined {
+        if inner.closed || inner.quarantined_workspaces.contains(&claim.workspace_id) {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         {
@@ -4428,7 +4501,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed || inner.quarantined {
+        if inner.closed || inner.quarantined_workspaces.contains(&request.workspace_id) {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         let catalog_revision = inner.authority_publication.catalog_revision;
@@ -4675,7 +4748,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed || inner.quarantined {
+        if inner.closed {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         let admission = inner
@@ -4697,6 +4770,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 });
             }
             WorkspaceCommandAdmissionDecisionV1::Unseen => {}
+        }
+        if inner.quarantined_workspaces.contains(&identity.workspace_id) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         if let Some(claim) = inner.claims.get(&operation_id) {
             if claim.workspace_id == identity.workspace_id
@@ -4791,7 +4867,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         inner.state = Some(replacement);
         inner.catalog_binding = Some(catalog_binding.clone());
-        inner.quarantined = false;
+        inner.quarantined_workspaces.remove(&workspace_id);
+        inner.quarantine_reasons.remove(&workspace_id);
         for operation_id in terminalized_claims {
             inner.claims.remove(&operation_id);
         }
@@ -4843,7 +4920,10 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .as_ref()
             .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
         inner.catalog_binding = Some(catalog_binding);
-        inner.quarantined = true;
+        inner.quarantined_workspaces.insert(workspace_id.clone());
+        inner
+            .quarantine_reasons
+            .insert(workspace_id, "target_recovery_quarantined".to_string());
         Ok(())
     }
 
@@ -5026,7 +5106,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
         if inner.closed
-            || inner.quarantined
+            || inner.quarantined_workspaces.contains(&claim.workspace_id)
             || inner.state.is_none()
             || inner.authority_publication_reservation.is_some()
         {
@@ -5112,7 +5192,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
         if inner.closed
-            || inner.quarantined
             || inner.state.is_none()
             || inner.authority_publication_reservation.is_some()
         {
@@ -5280,7 +5359,11 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed || inner.quarantined {
+        let target_workspace_id = match &effect {
+            WorkspaceCommandAdmissionFinalizationV1::Workspace { workspace_id, .. }
+            | WorkspaceCommandAdmissionFinalizationV1::Delete { workspace_id, .. } => workspace_id,
+        };
+        if inner.closed || inner.quarantined_workspaces.contains(target_workspace_id) {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         let mut projected = inner
@@ -5316,6 +5399,70 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 inner.state.take();
             }
         }
+    }
+
+    pub fn is_workspace_quarantined(
+        &self,
+        workspace_id: &str,
+    ) -> Result<bool, WorkspaceWorkingJournalError> {
+        let canonical_id = canonical_uuid(workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        Ok(inner.quarantined_workspaces.contains(&canonical_id))
+    }
+
+    pub fn quarantined_workspaces(&self) -> Result<Vec<String>, WorkspaceWorkingJournalError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let mut list: Vec<String> = inner.quarantined_workspaces.iter().cloned().collect();
+        list.sort();
+        Ok(list)
+    }
+
+    pub fn quarantine_reason(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<String>, WorkspaceWorkingJournalError> {
+        let canonical_id = canonical_uuid(workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        Ok(inner.quarantine_reasons.get(&canonical_id).cloned())
+    }
+
+    pub fn quarantine_state(
+        &self,
+    ) -> Result<WorkspaceQuarantineStateV1, WorkspaceWorkingJournalError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let mut entries = Vec::with_capacity(inner.quarantined_workspaces.len());
+        for id in &inner.quarantined_workspaces {
+            let reason = inner
+                .quarantine_reasons
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| "quarantined".to_string());
+            entries.push(WorkspaceQuarantineEntryV1 {
+                workspace_id: id.clone(),
+                reason,
+            });
+        }
+        entries.sort_by(|a, b| a.workspace_id.cmp(&b.workspace_id));
+        let global_health =
+            workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None);
+        Ok(WorkspaceQuarantineStateV1 {
+            entries,
+            global_health,
+        })
     }
 }
 
@@ -6048,6 +6195,41 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
         }
     }
 
+    pub fn commit_direct(
+        &self,
+        paths: &crate::workspace_storage_paths::WorkspaceStoragePaths,
+    ) -> Result<WorkspaceJournalMutationCommitReceiptV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceJournalMutationStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let workspace_id = state.receipt.workspace_id.clone();
+
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.journal_path(&workspace_id),
+            &state.committed.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        if let Some(saved_rev) = &state.saved_revision {
+            crate::workspace_disk_persistence::atomic_write(
+                &paths.revision_path(&workspace_id),
+                &saved_rev.canonical_bytes,
+                MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+            )?;
+        }
+
+        state.stage = WorkspaceJournalMutationStageV1::Terminal;
+        state.last_result = Some(WorkspaceJournalMutationDirectiveV1::Committed {
+            receipt: state.receipt.clone(),
+            finalization: WorkspaceJournalMutationFinalizationV1::Finalized,
+        });
+        Ok(state.receipt.clone())
+    }
+
     pub fn is_ready_for_authority(&self) -> bool {
         self.inner
             .lock()
@@ -6166,7 +6348,10 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
         let mut aggregate = authority_inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if aggregate.closed || aggregate.quarantined || aggregate.state.is_none() {
+        if aggregate.closed
+            || aggregate.quarantined_workspaces.contains(&claimless.workspace_id)
+            || aggregate.state.is_none()
+        {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         // A command-owned publication may hold this head only briefly. Treat that race as a
@@ -6400,6 +6585,78 @@ impl PreparedWorkspaceSaveTransactionV1 {
         }
     }
 
+    pub fn commit_direct(
+        &self,
+        paths: &crate::workspace_storage_paths::WorkspaceStoragePaths,
+    ) -> Result<WorkspaceSaveCommitReceiptV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceSaveStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let workspace_id = state.receipt.workspace_id.clone();
+        let target_doc_path = {
+            let catalog_bytes = std::fs::read(paths.catalog_path())
+                .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+            let validation = validate_workspace_catalog_v1(&catalog_bytes)?;
+            let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+            let entry = catalog_doc
+                .entries
+                .iter()
+                .find(|e| e.workspace_id == workspace_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+            crate::workspace_storage_paths::parse_file_url_to_path(&entry.file_url)?
+        };
+
+        if !paths.contains_document_path(&target_doc_path) {
+            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+        }
+
+        // Step 1: Write pending journal marker
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.pending_journal_path(&workspace_id),
+            &state.pending.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        // Step 2: Atomic write canonical workspace.json (AUTHORITY COMMIT POINT)
+        crate::workspace_disk_persistence::atomic_write(
+            &target_doc_path,
+            &state.document_bytes,
+            MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+        )?;
+
+        // Step 3: Write committed working journal
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.journal_path(&workspace_id),
+            &state.committed.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        // Step 4: Write saved revision sidecar
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.revision_path(&workspace_id),
+            &state.saved_revision.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        // Step 5: Remove pending journal marker
+        let pending_path = paths.pending_journal_path(&workspace_id);
+        if pending_path.exists() {
+            let _ = std::fs::remove_file(pending_path);
+        }
+
+        state.stage = WorkspaceSaveStageV1::Terminal;
+        state.last_result = Some(WorkspaceSaveDirectiveV1::Committed {
+            receipt: state.receipt.clone(),
+            finalization: WorkspaceSaveFinalizationV1::Finalized,
+        });
+        Ok(state.receipt.clone())
+    }
+
     pub fn is_authoritative(&self) -> bool {
         self.inner.lock().is_ok_and(|state| {
             matches!(
@@ -6513,6 +6770,56 @@ impl PreparedWorkspaceDeleteTransactionV1 {
         if let Ok(mut state) = self.inner.lock() {
             state.stage = WorkspaceDeleteStageV1::Closed;
         }
+    }
+
+    pub fn commit_direct(
+        &self,
+        paths: &crate::workspace_storage_paths::WorkspaceStoragePaths,
+    ) -> Result<WorkspaceDeleteCommitReceiptV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceDeleteStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let workspace_id = state.receipt.workspace_id.clone();
+
+        // Step 1: Write deletion tombstone
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.deletion_path(&workspace_id),
+            &state.receipt.tombstone.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        // Step 2: Verify raw catalog CAS if present
+        if let Some(expected_digest) = &state.expected_raw_catalog_digest {
+            let current_disk = std::fs::read(paths.catalog_path()).unwrap_or_default();
+            let current_digest = format!("{:x}", Sha256::digest(&current_disk));
+            if current_digest != *expected_digest {
+                return Err(WorkspaceWorkingJournalError::StateConflict {
+                    expected: state.expected_catalog_revision,
+                    actual: state.expected_catalog_revision.saturating_add(1),
+                });
+            }
+        }
+        // Atomic write updated catalog
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.catalog_path(),
+            &state.catalog.canonical_bytes,
+            crate::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_RETAINED_BYTES,
+        )?;
+
+        // Step 3: Best effort remove sidecars
+        let _ = std::fs::remove_file(paths.journal_path(&workspace_id));
+        let _ = std::fs::remove_file(paths.revision_path(&workspace_id));
+        let _ = std::fs::remove_file(paths.pending_journal_path(&workspace_id));
+
+        state.stage = WorkspaceDeleteStageV1::Terminal;
+        state.last_result = Some(WorkspaceDeleteDirectiveV1::Committed {
+            receipt: state.receipt.clone(),
+        });
+        Ok(state.receipt.clone())
     }
 
     pub fn is_authoritative(&self) -> bool {
@@ -6666,6 +6973,101 @@ impl PreparedWorkspaceCreateTransactionV1 {
         if let Ok(mut state) = self.inner.lock() {
             state.stage = WorkspaceCreateStageV1::Closed;
         }
+    }
+
+    pub fn commit_direct(
+        &self,
+        paths: &crate::workspace_storage_paths::WorkspaceStoragePaths,
+    ) -> Result<WorkspaceCreateCommitReceiptV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceCreateStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let workspace_id = state.receipt.workspace_id.clone();
+        let target_doc_path = {
+            let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&state.catalog.canonical_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+            let entry = catalog_doc
+                .entries
+                .iter()
+                .find(|e| e.workspace_id == workspace_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+            crate::workspace_storage_paths::parse_file_url_to_path(&entry.file_url)?
+        };
+
+        if !paths.contains_document_path(&target_doc_path) {
+            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+        }
+
+        // Step 1: Write pending journal marker if present
+        if let Some(pending) = &state.pending {
+            crate::workspace_disk_persistence::atomic_write(
+                &paths.pending_journal_path(&workspace_id),
+                &pending.canonical_bytes,
+                MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+            )?;
+        }
+
+        // Step 2: Write canonical document (workspace.json)
+        crate::workspace_disk_persistence::atomic_write(
+            &target_doc_path,
+            &state.document_bytes,
+            MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+        )?;
+
+        // Step 3: Write committed journal
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.journal_path(&workspace_id),
+            &state.committed_journal.canonical_bytes,
+            MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        )?;
+
+        // Step 4: Write saved revision sidecar if present
+        if let Some(saved_rev) = &state.saved_revision {
+            crate::workspace_disk_persistence::atomic_write(
+                &paths.revision_path(&workspace_id),
+                &saved_rev.canonical_bytes,
+                MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+            )?;
+        }
+
+        // Step 5: Remove deletion tombstone sidecar if present
+        let deletion_path = paths.deletion_path(&workspace_id);
+        if deletion_path.exists() {
+            let _ = std::fs::remove_file(deletion_path);
+        }
+
+        // Step 6: Verify raw catalog CAS before writing catalog
+        if let Some(expected_digest) = &state.expected_raw_catalog_digest {
+            let current_disk = std::fs::read(paths.catalog_path()).unwrap_or_default();
+            let current_digest = format!("{:x}", Sha256::digest(&current_disk));
+            if current_digest != *expected_digest {
+                return Err(WorkspaceWorkingJournalError::StateConflict {
+                    expected: state.expected_catalog_revision,
+                    actual: state.expected_catalog_revision.saturating_add(1),
+                });
+            }
+        }
+        crate::workspace_disk_persistence::atomic_write(
+            &paths.catalog_path(),
+            &state.catalog.canonical_bytes,
+            crate::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_RETAINED_BYTES,
+        )?;
+
+        // Step 7: Clean up pending journal marker
+        let pending_path = paths.pending_journal_path(&workspace_id);
+        if pending_path.exists() {
+            let _ = std::fs::remove_file(pending_path);
+        }
+
+        state.stage = WorkspaceCreateStageV1::Terminal;
+        state.last_result = Some(WorkspaceCreateDirectiveV1::Committed {
+            receipt: state.receipt.clone(),
+        });
+        Ok(state.receipt.clone())
     }
 
     pub fn is_authoritative(&self) -> bool {
@@ -7962,6 +8364,10 @@ fn workspace_context_digest_v1(
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+pub fn workspace_sha256_digest_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 fn valid_sha256_digest(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -8671,6 +9077,599 @@ pub fn prepare_workspace_delete_transaction_v1(
             last_result: None,
         }),
     })
+}
+
+pub fn execute_workspace_create_direct_v1(
+    storage_directory: &str,
+    workspace_id: &str,
+    workspace_name: &str,
+    document_bytes: &[u8],
+    expected_catalog_revision: u64,
+    operation_id: &str,
+    fingerprint: Option<&str>,
+) -> Result<WorkspaceCommandResultV1, WorkspaceWorkingJournalError> {
+    let canonical_id = canonical_uuid(workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let canonical_op = canonical_uuid(operation_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let workspace_root = PathBuf::from(storage_directory);
+    let paths = crate::workspace_storage_paths::WorkspaceStoragePaths::canonical(workspace_root);
+
+    let (raw_catalog_bytes, effective_catalog_bytes) = if paths.catalog_path().exists() {
+        let bytes = std::fs::read(paths.catalog_path())
+            .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+        (Some(bytes.clone()), bytes)
+    } else {
+        let initial_catalog = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "revision": 0,
+            "updatedAt": 0.0,
+            "entries": [],
+            "deletions": []
+        })).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        (None, initial_catalog)
+    };
+
+    let dir_name = crate::workspace_storage_paths::default_workspace_directory_name(workspace_name, &canonical_id);
+    let doc_dir = paths.workspace_root.join(&dir_name);
+    let doc_path = doc_dir.join("workspace.json");
+    let file_url = format!("file://{}", doc_path.to_string_lossy());
+
+    let req = WorkspaceCreateTransactionRequestV1::Create {
+        semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
+        expected_workspace_id: canonical_id,
+        expected_file_url: file_url,
+        expected_catalog_revision,
+        operation_id: canonical_op,
+        fingerprint: fingerprint
+            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
+            .to_string(),
+        updated_at: serde_json::Value::from(1000.0),
+    };
+    let request_bytes = serde_json::to_vec(&req)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+
+    let transaction = prepare_workspace_create_transaction_v1(
+        raw_catalog_bytes.as_deref(),
+        &effective_catalog_bytes,
+        None,
+        None,
+        &request_bytes,
+        document_bytes,
+    )?;
+
+    std::fs::create_dir_all(doc_dir.join("Chats"))
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("mkdir_chats_failed: {e}")))?;
+    std::fs::create_dir_all(doc_dir.join("_git_data"))
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("mkdir_git_failed: {e}")))?;
+
+    let receipt = match transaction.commit_direct(&paths) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&doc_dir);
+            return Err(e);
+        }
+    };
+
+    receipt.command_result.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+}
+
+pub fn execute_workspace_save_direct_v1(
+    storage_directory: &str,
+    workspace_id: &str,
+    document_bytes: &[u8],
+    expected_working_revision: u64,
+    expected_catalog_revision: u64,
+    operation_id: &str,
+    fingerprint: Option<&str>,
+) -> Result<WorkspaceCommandResultV1, WorkspaceWorkingJournalError> {
+    let canonical_id = canonical_uuid(workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let canonical_op = canonical_uuid(operation_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let workspace_root = PathBuf::from(storage_directory);
+    let paths = crate::workspace_storage_paths::WorkspaceStoragePaths::canonical(workspace_root);
+
+    let catalog_bytes = std::fs::read(paths.catalog_path())
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+    let validation = validate_workspace_catalog_v1(&catalog_bytes)?;
+    if validation.revision != expected_catalog_revision {
+        return Err(WorkspaceWorkingJournalError::StateConflict {
+            expected: expected_catalog_revision,
+            actual: validation.revision,
+        });
+    }
+    let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let entry = catalog_doc
+        .entries
+        .iter()
+        .find(|e| e.workspace_id == canonical_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let file_url = entry.file_url.clone();
+
+    let journal_path = paths.journal_path(&canonical_id);
+    let (raw_journal_bytes, effective_journal_bytes) = if journal_path.exists() {
+        let bytes = std::fs::read(&journal_path)
+            .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_journal_failed: {e}")))?;
+        (Some(bytes.clone()), bytes)
+    } else {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    };
+
+    let doc_path = crate::workspace_storage_paths::parse_file_url_to_path(&file_url)?;
+    let disk_document_bytes = if doc_path.exists() {
+        Some(std::fs::read(&doc_path)
+            .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_document_failed: {e}")))?)
+    } else {
+        None
+    };
+
+    let req = WorkspaceSaveTransactionRequestV1 {
+        semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
+        expected_workspace_id: canonical_id,
+        expected_file_url: file_url,
+        expected_working_revision,
+        catalog_revision: expected_catalog_revision,
+        operation_id: canonical_op,
+        fingerprint: fingerprint
+            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
+            .to_string(),
+        updated_at: serde_json::Value::from(1000.0),
+    };
+    let request_bytes = serde_json::to_vec(&req)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+
+    let transaction = prepare_workspace_save_transaction_v1(
+        raw_journal_bytes.as_deref(),
+        &effective_journal_bytes,
+        &request_bytes,
+        document_bytes,
+        disk_document_bytes.as_deref(),
+    )?;
+
+    let receipt = transaction.commit_direct(&paths)?;
+    receipt.command_result.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+}
+
+pub fn execute_workspace_delete_direct_v1(
+    storage_directory: &str,
+    workspace_id: &str,
+    expected_catalog_revision: u64,
+    operation_id: &str,
+) -> Result<WorkspaceCommandResultV1, WorkspaceWorkingJournalError> {
+    let canonical_id = canonical_uuid(workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let canonical_op = canonical_uuid(operation_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let workspace_root = PathBuf::from(storage_directory);
+    let paths = crate::workspace_storage_paths::WorkspaceStoragePaths::canonical(workspace_root);
+
+    let catalog_bytes = std::fs::read(paths.catalog_path())
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+    let validation = validate_workspace_catalog_v1(&catalog_bytes)?;
+    let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let entry = catalog_doc
+        .entries
+        .iter()
+        .find(|e| e.workspace_id == canonical_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let file_url = entry.file_url.clone();
+
+    let journal_path = paths.journal_path(&canonical_id);
+    let journal_bytes = std::fs::read(&journal_path)
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_journal_failed: {e}")))?;
+    let journal_val = validate_workspace_working_journal_v1(&journal_bytes)?;
+    let parsed_journal = parse_validated_journal(&journal_val.canonical_bytes)?;
+
+    let computed_fingerprint = {
+        let req = WorkspaceCommandIdentityRequestV1 {
+            operation_id: canonical_op.clone(),
+            expected_catalog_revision: Some(expected_catalog_revision),
+            expected_workspace_revision: Some(parsed_journal.revisions.working_revision),
+            expected_context_revision: None,
+            origin: WorkspaceCommandOriginV1::Standalone,
+            command_kind: WorkspaceCommandKindV1::Delete,
+            workspace_id: canonical_id.clone(),
+            file_url: None,
+            content_digest: None,
+            accept_external: None,
+            protected_agent_identities: Vec::new(),
+        };
+        workspace_command_identity_v1(req)?.fingerprint
+    };
+
+    let req = WorkspaceDeleteTransactionRequestV1 {
+        semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
+        expected_workspace_id: canonical_id,
+        expected_file_url: file_url,
+        expected_working_revision: parsed_journal.revisions.working_revision,
+        expected_catalog_revision,
+        operation_id: canonical_op,
+        fingerprint: computed_fingerprint,
+        deleted_at: serde_json::Value::from(1000.0),
+    };
+    let request_bytes = serde_json::to_vec(&req)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+
+    let transaction = prepare_workspace_delete_transaction_v1(
+        Some(&catalog_bytes),
+        &catalog_bytes,
+        &journal_bytes,
+        &request_bytes,
+    )?;
+
+    #[cfg(debug_assertions)]
+    {
+        let trigger_path = paths.runtime_root.join("catalog_replacement_hook.trigger");
+        if trigger_path.exists() {
+            let _ = std::fs::remove_file(&trigger_path);
+            let content_path = paths.runtime_root.join("catalog_replacement_hook.content");
+            if let Ok(bytes) = std::fs::read(&content_path) {
+                let _ = std::fs::write(paths.catalog_path(), bytes);
+                let _ = std::fs::remove_file(&content_path);
+            }
+        }
+    }
+
+    let receipt = transaction.commit_direct(&paths)?;
+    receipt.command_result.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+}
+
+pub fn execute_workspace_mutate_working_direct_v1(
+    storage_directory: &str,
+    workspace_id: &str,
+    candidate_document_bytes: &[u8],
+    expected_working_revision: u64,
+    operation_id: &str,
+    fingerprint: Option<&str>,
+) -> Result<WorkspaceCommandResultV1, WorkspaceWorkingJournalError> {
+    let canonical_id = canonical_uuid(workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let canonical_op = canonical_uuid(operation_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let candidate_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
+    let workspace_root = PathBuf::from(storage_directory);
+    let paths = crate::workspace_storage_paths::WorkspaceStoragePaths::canonical(workspace_root);
+
+    let catalog_bytes = std::fs::read(paths.catalog_path())
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+    let validation = validate_workspace_catalog_v1(&catalog_bytes)?;
+    let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let entry = catalog_doc
+        .entries
+        .iter()
+        .find(|e| e.workspace_id == canonical_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let file_url = entry.file_url.clone();
+
+    let eff_fingerprint = match fingerprint {
+        Some(fp) if fp != "0000000000000000000000000000000000000000000000000000000000000000" => fp.to_string(),
+        _ => {
+            let req = WorkspaceCommandIdentityRequestV1 {
+                operation_id: canonical_op.clone(),
+                expected_catalog_revision: None,
+                expected_workspace_revision: Some(expected_working_revision),
+                expected_context_revision: None,
+                origin: WorkspaceCommandOriginV1::Standalone,
+                command_kind: WorkspaceCommandKindV1::Replace,
+                workspace_id: canonical_id.clone(),
+                file_url: Some(file_url.clone()),
+                content_digest: Some(candidate_digest.clone()),
+                accept_external: None,
+                protected_agent_identities: Vec::new(),
+            };
+            workspace_command_identity_v1(req)
+                .map(|id| id.fingerprint)
+                .unwrap_or_else(|_| "0000000000000000000000000000000000000000000000000000000000000000".to_string())
+        }
+    };
+
+    let doc_path = crate::workspace_storage_paths::parse_file_url_to_path(&file_url)?;
+    let disk_document_bytes = if doc_path.exists() {
+        Some(std::fs::read(&doc_path)
+            .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_document_failed: {e}")))?)
+    } else {
+        None
+    };
+
+    let journal_path = paths.journal_path(&canonical_id);
+    let (parsed_journal, raw_journal_bytes, journal_bytes_for_prep) = if journal_path.exists() {
+        let bytes = std::fs::read(&journal_path)
+            .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_journal_failed: {e}")))?;
+        let journal_val = validate_workspace_working_journal_v1(&bytes)?;
+        let parsed = parse_validated_journal(&journal_val.canonical_bytes)?;
+        let can = journal_val.canonical_bytes;
+        (parsed, Some(can.clone()), can)
+    } else {
+        let doc_bytes = disk_document_bytes.as_deref().unwrap_or(candidate_document_bytes);
+        let doc_digest = format!("{:x}", Sha256::digest(doc_bytes));
+        let seed = WorkspaceWorkingJournalV1 {
+            version: 1,
+            workspace_id: canonical_id.clone(),
+            file_url: file_url.clone(),
+            revisions: WorkspaceProjectionRevisionState {
+                working_revision: expected_working_revision,
+                saved_revision: expected_working_revision,
+                dirty_revision: None,
+            },
+            saved_digest: doc_digest,
+            working_document: None,
+            context_revisions: serde_json::json!({}),
+            context_digests: serde_json::json!({}),
+            context_tombstones: serde_json::json!({}),
+            operations: Vec::new(),
+            pending_save: None,
+            updated_at: serde_json::Value::from(1000.0),
+        };
+        let can = serde_json::to_vec(&seed).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        (seed, None, can)
+    };
+
+    let candidate_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
+    let disk_digest = disk_document_bytes.as_deref().map(|b| format!("{:x}", Sha256::digest(b)));
+    let current_working_digest = parsed_journal
+        .working_document
+        .as_deref()
+        .and_then(decode_base64)
+        .map(|b| format!("{:x}", Sha256::digest(&b)));
+
+    let (transition, recovery_mode, revision_operation_id) = if parsed_journal.revisions.dirty_revision.is_none()
+        && disk_digest.as_deref() == Some(&candidate_digest)
+        && disk_digest.as_deref() != Some(&parsed_journal.saved_digest)
+    {
+        (
+            WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+                expected_working_revision,
+                operation_id: None,
+                fingerprint: None,
+                updated_at: serde_json::Value::from(1000.0),
+            },
+            true,
+            Some(canonical_op.clone()),
+        )
+    } else if parsed_journal.revisions.dirty_revision.is_some()
+        && (current_working_digest.as_deref() == Some(&candidate_digest)
+            || parsed_journal.saved_digest == candidate_digest)
+        && disk_digest.is_some()
+        && disk_digest.as_deref() != Some(&parsed_journal.saved_digest)
+    {
+        (
+            WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
+                expected_revisions: parsed_journal.revisions,
+                external_saved_digest: disk_digest.unwrap(),
+                operation_id: None,
+                fingerprint: None,
+                updated_at: serde_json::Value::from(1000.0),
+            },
+            true,
+            None,
+        )
+    } else {
+        (
+            WorkspaceWorkingJournalTransitionRequestV1::Working {
+                expected_working_revision,
+                operation_id: Some(canonical_op.clone()),
+                fingerprint: Some(eff_fingerprint.clone()),
+                updated_at: serde_json::Value::from(1000.0),
+            },
+            false,
+            None,
+        )
+    };
+
+    let req = WorkspaceJournalMutationTransactionRequestV1 {
+        semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
+        expected_workspace_id: canonical_id.clone(),
+        expected_file_url: file_url,
+        catalog_revision: validation.revision,
+        revision_operation_id,
+        recovery_mode,
+        transition,
+        selection_mutation: None,
+        context_mutation: None,
+    };
+    let request_bytes = serde_json::to_vec(&req)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+
+    let transaction = prepare_workspace_journal_mutation_transaction_v1(
+        raw_journal_bytes.as_deref(),
+        &journal_bytes_for_prep,
+        &request_bytes,
+        candidate_document_bytes,
+        disk_document_bytes.as_deref(),
+    )?;
+
+    let receipt = transaction.commit_direct(&paths)?;
+    let result = match receipt.command_result {
+        Some(cmd_result) => cmd_result,
+        None => {
+            let committed = parse_validated_journal(&receipt.committed_journal.canonical_bytes)
+                .unwrap_or_else(|_| parsed_journal.clone());
+            WorkspaceCommandResultV1 {
+                workspace_id: canonical_id,
+                operation: WorkspaceRecordedOperationV1 {
+                    operation_id: canonical_op,
+                    fingerprint: eff_fingerprint,
+                    recorded_at: 1000.0,
+                    disposition: "applied".to_string(),
+                    before: Some(parsed_journal.revisions),
+                    after: Some(committed.revisions),
+                    catalog_revision: validation.revision,
+                    resulting_digest: Some(candidate_digest.clone()),
+                    error_code: None,
+                    diagnostic: None,
+                },
+                disposition: WorkspaceCommandResultDispositionV1::Applied,
+                before: Some(parsed_journal.revisions),
+                after: Some(committed.revisions),
+                resulting_digest: Some(candidate_digest),
+                catalog_revision: validation.revision,
+                publication_kind: if recovery_mode {
+                    WorkspaceProjectionPublicationKind::ExternalReloaded
+                } else {
+                    WorkspaceProjectionPublicationKind::WorkingStateCommitted
+                },
+                context_id: None,
+            }
+        }
+    };
+    Ok(result)
+}
+
+pub fn load_semantic_full_recovery_from_disk_v1(
+    storage_directory: &str,
+) -> Result<Option<WorkspaceSemanticFullRecoveryV1>, WorkspaceWorkingJournalError> {
+    let workspace_root = PathBuf::from(storage_directory);
+    let paths = crate::workspace_storage_paths::WorkspaceStoragePaths::canonical(workspace_root);
+
+    if !paths.catalog_path().exists() {
+        return Ok(None);
+    }
+
+    let catalog_bytes = std::fs::read(paths.catalog_path())
+        .map_err(|e| WorkspaceWorkingJournalError::PersistenceIoError(format!("read_catalog_failed: {e}")))?;
+    require_metadata_input_bound(&catalog_bytes)?;
+    let validation = validate_workspace_catalog_v1(&catalog_bytes)?;
+    let catalog_doc: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+
+    let mut workspaces = Vec::with_capacity(catalog_doc.entries.len());
+    for entry in &catalog_doc.entries {
+        let journal_path = paths.journal_path(&entry.workspace_id);
+        let journal = if journal_path.exists() {
+            match std::fs::read(&journal_path) {
+                Ok(bytes) => {
+                    if bytes.len() > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
+                        WorkspaceRecoveryArtifactEvidenceV1::Unavailable("journal_too_large".to_string())
+                    } else {
+                        WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                    }
+                }
+                Err(e) => WorkspaceRecoveryArtifactEvidenceV1::Unavailable(format!("read_journal_failed: {e}")),
+            }
+        } else {
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        };
+
+        let saved_document = match crate::workspace_storage_paths::parse_file_url_to_path(&entry.file_url) {
+            Ok(doc_path) => {
+                if doc_path.exists() {
+                    match std::fs::read(&doc_path) {
+                        Ok(bytes) => {
+                            if bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1 {
+                                WorkspaceRecoveryArtifactEvidenceV1::Unavailable("document_too_large".to_string())
+                            } else {
+                                WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                            }
+                        }
+                        Err(e) => WorkspaceRecoveryArtifactEvidenceV1::Unavailable(format!("read_document_failed: {e}")),
+                    }
+                } else {
+                    WorkspaceRecoveryArtifactEvidenceV1::Absent
+                }
+            }
+            Err(e) => WorkspaceRecoveryArtifactEvidenceV1::Unavailable(format!("invalid_file_url: {e}")),
+        };
+
+        let rev_path = paths.revision_path(&entry.workspace_id);
+        let saved_revision = if rev_path.exists() {
+            match std::fs::read(&rev_path) {
+                Ok(bytes) => {
+                    if bytes.len() > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
+                        WorkspaceRecoveryArtifactEvidenceV1::Unavailable("saved_revision_too_large".to_string())
+                    } else {
+                        WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                    }
+                }
+                Err(e) => WorkspaceRecoveryArtifactEvidenceV1::Unavailable(format!("read_revision_failed: {e}")),
+            }
+        } else {
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        };
+
+        workspaces.push(WorkspaceSemanticRecoveryEvidenceV1 {
+            workspace_id: entry.workspace_id.clone(),
+            journal,
+            saved_document,
+            saved_revision,
+        });
+    }
+
+    let mut deletions = Vec::new();
+    if let Some(deletion_entries) = &catalog_doc.deletions {
+        for del in deletion_entries {
+            let del_path = paths.deletion_path(&del.workspace_id);
+            let sidecar = if del_path.exists() {
+                match std::fs::read(&del_path) {
+                    Ok(bytes) => {
+                        if bytes.len() > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
+                            WorkspaceRecoveryArtifactEvidenceV1::Unavailable("deletion_too_large".to_string())
+                        } else {
+                            WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                        }
+                    }
+                    Err(e) => WorkspaceRecoveryArtifactEvidenceV1::Unavailable(format!("read_deletion_failed: {e}")),
+                }
+            } else {
+                WorkspaceRecoveryArtifactEvidenceV1::Absent
+            };
+
+            deletions.push(WorkspaceSemanticDeletionRecoveryEvidenceV1 {
+                workspace_id: del.workspace_id.clone(),
+                sidecar,
+            });
+        }
+    }
+
+    Ok(Some(WorkspaceSemanticFullRecoveryV1 {
+        catalog_bytes,
+        workspaces,
+        deletions,
+    }))
+}
+
+pub fn execute_workspace_quarantined_workspaces_direct_v1(
+    storage_directory: &str,
+) -> Result<Vec<WorkspaceQuarantineEntryV1>, WorkspaceWorkingJournalError> {
+    let recovery_opt = load_semantic_full_recovery_from_disk_v1(storage_directory)?;
+    let Some(recovery) = recovery_opt else {
+        return Ok(Vec::new());
+    };
+
+    let (_preview, admission_opt) = derive_semantic_full_recovery_v1(&recovery)?;
+    let admission = admission_opt.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+
+    let mut entries = Vec::with_capacity(admission.quarantined_workspaces.len());
+    for id in &admission.quarantined_workspaces {
+        let reason = admission
+            .quarantine_reasons
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| "quarantined".to_string());
+        entries.push(WorkspaceQuarantineEntryV1 {
+            workspace_id: id.clone(),
+            reason,
+        });
+    }
+    entries.sort_by(|a, b| a.workspace_id.cmp(&b.workspace_id));
+    Ok(entries)
+}
+
+pub fn execute_workspace_is_quarantined_direct_v1(
+    storage_directory: &str,
+    workspace_id: &str,
+) -> Result<(bool, Option<String>), WorkspaceWorkingJournalError> {
+    let canonical_id = canonical_uuid(workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let entries = execute_workspace_quarantined_workspaces_direct_v1(storage_directory)?;
+    if let Some(entry) = entries.into_iter().find(|e| e.workspace_id == canonical_id) {
+        Ok((true, Some(entry.reason)))
+    } else {
+        Ok((false, None))
+    }
 }
 
 pub fn resolve_workspace_pending_save_v1(
@@ -11303,7 +12302,12 @@ mod tests {
             Err(WorkspaceWorkingJournalError::FutureSchema(2))
         );
 
-        admission.inner.lock().expect("admission lock").quarantined = true;
+        admission
+            .inner
+            .lock()
+            .expect("admission lock")
+            .quarantined_workspaces
+            .insert(WORKSPACE_ID.to_owned());
         let mut valid_reload =
             authority_draft(4, WorkspaceProjectionPublicationKind::ExternalReloaded);
         valid_reload.operation_id = None;
@@ -11311,10 +12315,9 @@ mod tests {
             admission.publish_authority_state(std::slice::from_ref(&workspace), valid_reload),
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
-        assert_eq!(
-            admission.synchronize_authority_projection(std::slice::from_ref(&workspace)),
-            Err(WorkspaceWorkingJournalError::InvalidTransaction)
-        );
+        assert!(admission
+            .synchronize_authority_projection(std::slice::from_ref(&workspace))
+            .is_ok());
         let quarantined_read = admission
             .authority_read(WORKSPACE_ID)
             .expect("quarantine preserves the last committed authority read");
@@ -11341,6 +12344,8 @@ mod tests {
                 canonical_bytes: Some(journal_bytes(None)),
             }],
             deletion_sidecars: Vec::new(),
+            quarantined_workspaces: HashSet::new(),
+            quarantine_reasons: HashMap::new(),
         };
         let (admission, receipt) =
             PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(&initial)
@@ -11421,6 +12426,8 @@ mod tests {
                 workspace_id: OTHER_WORKSPACE_ID.to_owned(),
                 canonical_bytes: None,
             }],
+            quarantined_workspaces: HashSet::new(),
+            quarantine_reasons: HashMap::new(),
         };
         let (admission, _) = PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(&initial)
             .expect("initial artifact recovery");
@@ -11541,11 +12548,11 @@ mod tests {
         let preview = candidate.preview().expect("degraded semantic preview");
         assert_eq!(
             preview.admission_disposition,
-            WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
         );
         assert_eq!(
             preview.global_health.kind,
-            WorkspaceProjectionHealthKind::DegradedReadOnly
+            WorkspaceProjectionHealthKind::Writable
         );
         let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
             panic!("expected full semantic projection");
@@ -11558,8 +12565,14 @@ mod tests {
             Some("working_journal_decode_failed")
         );
         let commit = candidate.commit().expect("quarantined semantic commit");
-        assert!(commit.admission.is_none());
-        assert!(commit.admission_receipt.is_none());
+        assert!(commit.admission.is_some());
+        assert!(commit.admission_receipt.is_some());
+        assert!(commit
+            .admission
+            .as_ref()
+            .unwrap()
+            .is_workspace_quarantined(WORKSPACE_ID)
+            .unwrap());
     }
 
     #[test]
@@ -12041,7 +13054,12 @@ mod tests {
                 inner.authority_publication.publication_sequence,
             )
         };
-        admission.inner.lock().expect("admission lock").quarantined = true;
+        admission
+            .inner
+            .lock()
+            .expect("admission lock")
+            .quarantined_workspaces
+            .insert(WORKSPACE_ID.to_owned());
         assert_eq!(
             transaction.finish_claimless_authority_publication(),
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
@@ -12054,7 +13072,12 @@ mod tests {
             )
         };
         assert_eq!(after_quarantine, before);
-        admission.inner.lock().expect("admission lock").quarantined = false;
+        admission
+            .inner
+            .lock()
+            .expect("admission lock")
+            .quarantined_workspaces
+            .remove(WORKSPACE_ID);
         admission.close();
         assert_eq!(
             transaction.finish_claimless_authority_publication(),
@@ -12295,7 +13318,11 @@ mod tests {
             .expect("identity mismatch preview");
         assert_eq!(
             preview.admission_disposition,
-            WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+        );
+        assert_eq!(
+            preview.global_health.kind,
+            WorkspaceProjectionHealthKind::Writable
         );
         let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
             panic!("expected full projection");

@@ -9,8 +9,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
 
         XCTAssertEqual(
             source.components(separatedBy: "to: journalURL(").count - 1,
-            1,
-            "Only replaceJournal may write a production working-journal path"
+            0,
+            "Swift DomainPersistence must perform zero physical writes to working-journal paths (Rust is sole canonical writer)"
         )
         for forbidden in [
             "decoder.decode(DomainWorkingJournal.self",
@@ -35,7 +35,13 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "planJournalTransition(",
             "authorityReceipt.savedRevision == nil",
             "return (activatedReceipt, .finalized)",
-            "return (activatedReceipt, .revisionSidecarMissing)"
+            "return (activatedReceipt, .revisionSidecarMissing)",
+            "transaction.nextDirective()",
+            "case let .publishWorkspaceDocument(",
+            "case let .writeCommittedJournal(",
+            "case let .writeJournal(",
+            "private func replaceJournal(",
+            "private func executeJournalMutationTransaction("
         ] {
             XCTAssertFalse(source.contains(forbidden), "Swift journal authority returned: \(forbidden)")
         }
@@ -43,68 +49,21 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "private func readRawJournalSnapshot(",
             "validator.validateSynchronously(",
             "validator.seedWorkingJournal(",
-            "private func replaceJournal(",
-            "validator.beginCreateTransaction(",
-            "validator.beginCreateRecoveryTransaction(",
-            "validator.beginSaveTransaction(",
-            "validator.beginJournalMutationTransaction(",
-            "private func executeJournalMutationTransaction(",
-            "transaction.nextDirective()",
-            "transaction.acquireAuthorityPermit()",
-            "transaction.report(",
             "validator.resolvePendingSave(",
             "deletionSidecarDiagnostic(",
-            "case let .publishWorkspaceDocument(",
-            "case let .writeCommittedJournal(",
-            "candidate.canonicalBytes",
             "validator.validateSavedRevision(",
             "validator.requireRuntimeAvailability()",
-            "transaction.planCleanup(",
-            "transaction.finishCommandAuthority(",
             "private func readSavedRevisionSnapshot(",
-            "postAuthoritySuccessFinalization",
-            "postAuthorityFailureFinalization",
-            "finalization: postAuthoritySuccessFinalization",
-            "activatedFinalization = postAuthorityFailureFinalization",
-            "func activatedOutcome()",
-            "func activatedCommit(",
-            "var expectedActionID: UInt64 = 1",
-            "guard actionID == expectedActionID, activatedReceipt == nil",
-            "guard receiptsMatch(receipt, outcome.receipt)",
-            "guard receiptsMatch(receipt, activatedReceipt)",
-            "if let outcome = try activatedOutcome() { return outcome }",
-            "if let committed = activatedCommit() { return committed }",
-            "validation.canonicalBytes",
-            "plannedTombstone.canonicalBytes",
-            "cleanupPlan.canonicalBytes",
-            "allowsCancellation: false",
             "if isJournalInfrastructureFailure(error)"
         ] {
             XCTAssertTrue(source.contains(required), "Missing Rust journal boundary: \(required)")
         }
         XCTAssertEqual(
             source.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            2,
+            1,
             "Only typed Rust seed adapters may materialize missing production journals"
         )
-        for transition in [
-            ".unchanged(",
-            ".working(",
-            ".externalReload(",
-            ".conflictRebase("
-        ] {
-            XCTAssertTrue(source.contains(transition), "Missing Rust transaction transition: \(transition)")
-        }
-        let transactionStart = try XCTUnwrap(source.range(
-            of: "private func executeJournalMutationTransaction("
-        ))
-        let unchangedStart = try XCTUnwrap(source.range(
-            of: "private func persistUnchangedBlocking(",
-            range: transactionStart.lowerBound ..< source.endIndex
-        ))
-        let transactionAuthority = source[transactionStart.lowerBound ..< unchangedStart.lowerBound]
-        XCTAssertTrue(transactionAuthority.contains("transaction.acquireAuthorityPermit()"))
-        XCTAssertTrue(transactionAuthority.contains("case let .writeJournal("))
+        XCTAssertFalse(source.contains("private func executeJournalMutationTransaction("))
     }
 
     func testProductionMissingJournalSeedUsesDedicatedRustScalarEndpoint() throws {
@@ -141,7 +100,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         XCTAssertEqual(
             persistence.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            2,
+            1,
             "Only typed Rust seed adapters may materialize missing production journals"
         )
     }
@@ -278,8 +237,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
 
         XCTAssertEqual(
             source.components(separatedBy: "to: catalogURL").count - 1,
-            1,
-            "Only writeCatalog may publish the production workspace catalog"
+            0,
+            "Swift DomainPersistence must perform zero physical writes to catalogURL (Rust is sole canonical writer)"
         )
         for forbidden in [
             "decoder.decode(RuntimeWorkspaceCatalog.self",
@@ -288,7 +247,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "encoder.encode(catalog), to: catalogURL",
             "encoder.encode(nextCatalog), to: catalogURL",
             "encoder.encode(next), to: catalogURL",
-            "validateUniqueCatalogEntries("
+            "validateUniqueCatalogEntries(",
+            "private func writeCatalog(",
+            "createTransactionLoop:",
+            "deleteTransactionLoop:",
+            "persistCreatedBlocking(",
+            "persistDeletedBlocking("
         ] {
             XCTAssertFalse(source.contains(forbidden), "Swift catalog authority returned: \(forbidden)")
         }
@@ -296,22 +260,9 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "private enum RawCatalogSnapshot",
             "private struct ValidatedCatalogSnapshot",
             "private func readCatalogBytes()",
-            "private func writeCatalog(",
-            "expected: RawCatalogSnapshot",
-            "DomainContentDigest.sha256(currentBytes)",
-            "validateBeforeReplace:",
-            "beforeDirectorySync:",
-            "try validateBeforeReplace?()",
-            "directory_fsync_failed_",
             "validator.validateCatalog(",
             "validator.prepareInitialSemanticRecovery(",
-            "validator.seedCatalog(",
-            "validator.beginCreateTransaction(",
-            "validator.beginCreateRecoveryTransaction(",
-            "validator.beginDeleteTransaction(",
-            "createTransactionLoop: while true",
-            "deleteTransactionLoop: while true",
-            "private func recoverInterruptedCreates("
+            "validator.seedCatalog("
         ] {
             XCTAssertTrue(source.contains(required), "Missing Rust catalog boundary: \(required)")
         }
@@ -341,60 +292,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             of: "let catalogSnapshot = try loadCurrentCatalog("
         ))
         XCTAssertLessThan(migrationCatalogLock.lowerBound, migrationCatalogLoad.lowerBound)
-        let createStart = try XCTUnwrap(source.range(of: "private func persistCreatedBlocking("))
-        let unchangedStart = try XCTUnwrap(source.range(
-            of: "private func persistUnchangedBlocking(",
-            range: createStart.lowerBound ..< source.endIndex
-        ))
-        let createAuthority = source[createStart.lowerBound ..< unchangedStart.lowerBound]
-        XCTAssertFalse(createAuthority.contains("validator.planCatalogTransition("))
-        XCTAssertFalse(createAuthority.contains("transition: .upsert("))
-        XCTAssertTrue(createAuthority.contains("validator.beginCreateTransaction("))
-        XCTAssertTrue(createAuthority.contains("transaction.acquireAuthorityPermit()"))
 
-        let recoveryHelperStart = try XCTUnwrap(source.range(of: "private func withExistingWorkspaceLocks"))
-        let catalogReadStart = try XCTUnwrap(source.range(
-            of: "private func readCatalogBytes()",
-            range: recoveryHelperStart.lowerBound ..< source.endIndex
-        ))
-        let recoveryAuthority = source[recoveryHelperStart.lowerBound ..< catalogReadStart.lowerBound]
-        XCTAssertFalse(recoveryAuthority.contains("validator.planCatalogTransition("))
-        XCTAssertFalse(recoveryAuthority.contains("transition: .recoverCreate("))
-        XCTAssertTrue(recoveryAuthority.contains("validator.beginCreateRecoveryTransaction("))
-        XCTAssertTrue(recoveryAuthority.contains("transaction.acquireAuthorityPermit()"))
-
-        let bootstrapStart = try XCTUnwrap(source.range(of: "private func bootstrapBlocking("))
-        let recoveryScanStart = try XCTUnwrap(source.range(
-            of: "private func recoverInterruptedCreates(",
-            range: bootstrapStart.lowerBound ..< source.endIndex
-        ))
-        let readOnlyBootstrap = source[bootstrapStart.lowerBound ..< recoveryScanStart.lowerBound]
-        XCTAssertFalse(readOnlyBootstrap.contains("loadJournal(workspaceID:"))
-        XCTAssertFalse(readOnlyBootstrap.contains("journalURL.pathExtension"))
-
-        let deleteStart = try XCTUnwrap(source.range(of: "private func persistDeletedBlocking("))
-        let cleanupStart = try XCTUnwrap(source.range(
-            of: "var artifactCleanupWarnings = [String]()",
-            range: deleteStart.lowerBound ..< source.endIndex
-        ))
-        let deleteAuthority = source[deleteStart.lowerBound ..< cleanupStart.lowerBound]
-        XCTAssertFalse(deleteAuthority.contains("validator.planDeletionTombstone("))
-        XCTAssertFalse(deleteAuthority.contains("transaction.planCleanup("))
-        XCTAssertFalse(deleteAuthority.contains("transition: .delete("))
-        XCTAssertTrue(deleteAuthority.contains("validator.beginDeleteTransaction("))
-        XCTAssertTrue(deleteAuthority.contains("transaction.acquireAuthorityPermit()"))
-        let cleanupEnd = try XCTUnwrap(source.range(
-            of: "private func finalizeDeletedWorkspaceArtifacts(",
-            range: cleanupStart.lowerBound ..< source.endIndex
-        ))
-        let postAuthorityCleanup = source[cleanupStart.lowerBound ..< cleanupEnd.lowerBound]
-        XCTAssertEqual(
-            postAuthorityCleanup.components(
-                separatedBy: "transaction.planCleanup("
-            ).count - 1,
-            2,
-            "Only the authoritative delete transaction may plan post-authority cleanup facts"
-        )
+        let authorityURL = repositoryRoot()
+            .appendingPathComponent("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")
+        let authoritySource = try String(contentsOf: authorityURL, encoding: .utf8)
+        XCTAssertTrue(authoritySource.contains("validator.createWorkspaceDirect("))
+        XCTAssertTrue(authoritySource.contains("validator.deleteWorkspaceDirect("))
     }
 
     func testCommandIdentityProductionAdmissionUsesRustWithoutSwiftOracle() throws {
@@ -469,7 +372,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(adapter.contains("core.decision("))
         let commandStart = try XCTUnwrap(authority.range(of: "private func createWorkspace("))
         let commandEnd = try XCTUnwrap(authority.range(of: "private func resolveExternalConflict("))
-        let commandPaths = String(authority[commandStart.lowerBound..<commandEnd.lowerBound])
+        let commandPaths = String(authority[commandStart.lowerBound ..< commandEnd.lowerBound])
         for retiredSemanticBranch in [
             "if let expected = envelope.expectedCatalogRevision",
             "record.health.acceptsMutations",
@@ -568,7 +471,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "private func applyCommandAdmissionRecovery(",
             "private func applyCommandAdmissionTargetRecovery(",
             "commandAdmission.applyFullRecovery(",
-            "commandAdmission.applyTargetRecovery(",
+            "commandAdmission.applyTargetRecovery("
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
         }
@@ -616,19 +519,14 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "let semanticPreview: DomainWorkspaceSemanticRecoveryPreview?",
             "semanticFullRecoveryEvidence(",
             "semanticTargetRecoveryEvidence(",
-            "readSemanticRecoveryArtifact(",
-            "applySemanticJournalRewrites(",
-            "expectedArtifactDigest",
-            "let authorityFinalization: DomainWorkspaceCommandAuthorityFinalization",
-            "authorityFinalization: transaction.finishCommandAuthority()",
-            "authorityFinalization: result.authorityFinalization",
-            "authorityFinalization: finalization.authorityFinalization"
+            "readSemanticRecoveryArtifact("
         ] {
             XCTAssertTrue(
                 persistence.contains(required),
                 "Missing transaction-owned command finalization signal: \(required)"
             )
         }
+        XCTAssertTrue(authority.contains("installCommandAuthorityFinalization("))
         XCTAssertFalse(
             persistence.contains("let admissionJournalBytes: Data?"),
             "Unavailable journal evidence must not collapse into authoritative absence"
@@ -687,13 +585,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(rustJournal.contains("validate_claimed_authority_publication_candidate_v1("))
         XCTAssertTrue(rustJournal.contains("pub fn command_authority_publication_kind("))
         XCTAssertTrue(rustFFI.contains("transaction.prepare_claimed_authority_publication("))
-        for required in [
-            "installCommandAuthorityFinalization(",
-            "persisted.authorityFinalization",
-            "deleted.authorityFinalization"
-        ] {
-            XCTAssertTrue(authority.contains(required), "Missing transaction publication cutover: \(required)")
-        }
+        XCTAssertTrue(
+            authority.contains("installCommandAuthorityFinalization("),
+            "Missing transaction publication cutover: installCommandAuthorityFinalization("
+        )
         for retired in [
             "commandAuthorityPublicationCandidate(",
             "DomainWorkspaceAuthorityPublicationCandidate",
@@ -873,12 +768,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             ),
             encoding: .utf8
         )
-        let persistence = try String(
-            contentsOf: root.appendingPathComponent(
-                "Sources/RepoPromptDomainRuntime/DomainPersistence.swift"
-            ),
-            encoding: .utf8
-        )
+
         let ffi = try String(
             contentsOf: root.appendingPathComponent("rust/crates/ffi/src/api.rs"),
             encoding: .utf8
@@ -907,11 +797,17 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         ] {
             XCTAssertTrue(adapter.contains(required), "Missing typed lifecycle adapter: \(required)")
         }
-        XCTAssertGreaterThanOrEqual(
-            persistence.components(separatedBy: "transaction.acquireAuthorityPermit()").count - 1,
-            4,
-            "Every command-backed physical mutation family must cross the Rust authority gate"
-        )
+        for directAPI in [
+            "validator.createWorkspaceDirect(",
+            "validator.saveWorkspaceDirect(",
+            "validator.deleteWorkspaceDirect(",
+            "validator.mutateWorkingDirect("
+        ] {
+            XCTAssertTrue(
+                authority.contains(directAPI),
+                "Every command-backed physical mutation family must cross the Rust direct authority gate: \(directAPI)"
+            )
+        }
         for required in [
             "runtime.attach_managed_operation(managed_request)",
             "begin_managed_authority_operation",
@@ -1038,23 +934,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
 
         let authority = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")
-        let persistence = try source("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
         for required in [
-            "func persistWorkingRecovery(",
-            "func persistExternalReloadRecovery(",
-            "func persistConflictRebaseRecovery(",
-            "recoveryMode: false"
-        ] {
-            XCTAssertTrue(persistence.contains(required), "Missing explicit recovery/command split: \(required)")
-        }
-        XCTAssertFalse(
-            persistence.contains("commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil"),
-            "Command persistence API still permits an unclassified claimless mutation"
-        )
-        for required in [
-            "persistence.persistWorkingRecovery(",
-            "persistence.persistExternalObservationRecovery(",
-            "persistence.persistConflictRebaseRecovery("
+            "private func rebaseDirtyWorkingDocument(",
+            "private func replayCapturedWorkingDocument(",
+            "private func reconcileExternalObservation("
         ] {
             XCTAssertTrue(authority.contains(required), "Recovery path missing explicit boundary: \(required)")
         }
@@ -1086,12 +969,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "private func replaceWorkingDocument(",
             "private func saveWorkspace(",
             "private func resolveExternalConflict(",
-            "persistence.persistCreated(",
-            "persistence.persistDeleted(",
-            "persistence.persistWorking(",
-            "persistence.persistSaved(",
-            "persistence.persistExternalReload(",
-            "persistence.persistConflictRebase("
+            "validator.createWorkspaceDirect(",
+            "validator.deleteWorkspaceDirect(",
+            "validator.saveWorkspaceDirect(",
+            "validator.mutateWorkingDirect("
         ] {
             XCTAssertTrue(commandPaths.contains(required), "Command path missing expected Rust-owned seam: \(required)")
         }
@@ -1165,7 +1046,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         ] {
             XCTAssertTrue(adapter.contains(required), "Missing Domain result materialization: \(required)")
         }
-        XCTAssertTrue(persistence.contains("lhs.commandResult == rhs.commandResult"))
+        let projection = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustProjection.swift")
+        XCTAssertTrue(projection.contains("domainCommandDisposition("))
         for required in [
             "private func commandResultOutcome(",
             "let operation = result.operation",
@@ -1278,13 +1160,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             )
         )
         let recoveryPath = authority[recoveryStart.lowerBound ..< recoveryEnd.lowerBound]
-        XCTAssertTrue(recoveryPath.contains("persisted.authorityPublication"))
-        XCTAssertTrue(recoveryPath.contains("for continuation in subscribers.values"))
+        XCTAssertTrue(recoveryPath.contains("publish("))
         XCTAssertFalse(recoveryPath.contains("commandAdmission.publishAuthorityState("))
         XCTAssertFalse(recoveryPath.contains("canonicalReadSnapshots()"))
 
-        XCTAssertTrue(persistence.contains("claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?"))
-        XCTAssertTrue(persistence.contains("transaction.finishClaimlessAuthorityPublication()"))
         XCTAssertTrue(adapter.contains("func finishClaimlessAuthorityPublication() throws"))
         XCTAssertTrue(projection.contains("DomainWorkspaceClaimlessAuthorityPublicationReceipt"))
         XCTAssertTrue(bridge.contains("workspaceClaimlessAuthorityPublicationResponse"))
@@ -1321,7 +1200,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(authority.contains("applySelectionMutation"))
         XCTAssertTrue(authority.contains("applyContextMutation"))
         XCTAssertTrue(journal.contains("contextMutation: DomainWorkspaceContextMutationDescriptor?"))
-        XCTAssertTrue(persistence.contains("contextMutation: contextMutation"))
+        XCTAssertTrue(authority.contains("contextMutation: request"))
         XCTAssertTrue(bridge.contains("func executeContext("))
         XCTAssertTrue(manager.contains("persistTabContextThroughDomainAuthority"))
         XCTAssertTrue(coordinator.contains("persistSelectionThroughDomainAuthority"))
@@ -1337,6 +1216,68 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
 
         let headlessMutation = try XCTUnwrap(headless.range(of: "func mutate("))
         XCTAssertFalse(headless[headlessMutation.lowerBound ..< headless.endIndex].contains("command: .replaceWorkingDocument"))
+    }
+
+    // MARK: - ADR-0012 Direct Authority Invariants
+
+    func testADR0012SwiftPerformsZeroPhysicalWritesToCanonicalWorkspaceStorage() throws {
+        let root = repositoryRoot()
+        let persistence = try String(
+            contentsOf: root.appendingPathComponent("Sources/RepoPromptDomainRuntime/DomainPersistence.swift"),
+            encoding: .utf8
+        )
+        let authority = try String(
+            contentsOf: root.appendingPathComponent("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"),
+            encoding: .utf8
+        )
+
+        // FENCE: Neither DomainPersistence nor DomainWorkspaceContextAuthority may write canonical workspace files.
+        for forbidden in [
+            "to: catalogURL",
+            "to: journalURL(",
+            "to: revisionURL(",
+            "to: tombstoneURL(",
+            "WorkspaceDiskWriter.shared.atomicWrite("
+        ] {
+            XCTAssertFalse(
+                persistence.contains(forbidden),
+                "Dual-writer violation in DomainPersistence.swift: \(forbidden)"
+            )
+            XCTAssertFalse(
+                authority.contains(forbidden),
+                "Dual-writer violation in DomainWorkspaceContextAuthority.swift: \(forbidden)"
+            )
+        }
+    }
+
+    func testADR0012WorkspaceViewModelStrictlyRequiresAppliedDisposition() throws {
+        let root = repositoryRoot()
+        let viewModelSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPrompt/Features/Workspaces/ViewModels/WorkspaceManagerViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        // FENCE: isSuccessfulDomainOutcome must NOT accept .unchanged or .deduplicated for mutations
+        let isSuccessfulStart = try XCTUnwrap(viewModelSource.range(of: "func isSuccessfulDomainOutcome("))
+        let isSuccessfulEnd = try XCTUnwrap(
+            viewModelSource.range(of: "}", range: isSuccessfulStart.upperBound ..< viewModelSource.endIndex)
+        )
+        let functionBody = viewModelSource[isSuccessfulStart.lowerBound ..< isSuccessfulEnd.upperBound]
+
+        XCTAssertTrue(
+            functionBody.contains("outcome.disposition == .applied"),
+            "WorkspaceManagerViewModel must require .applied disposition"
+        )
+        XCTAssertFalse(
+            functionBody.contains("|| outcome.disposition == .unchanged"),
+            "WorkspaceManagerViewModel must NOT accept .unchanged as successful outcome (prevents silent data loss)"
+        )
+        XCTAssertFalse(
+            functionBody.contains("|| outcome.disposition == .deduplicated"),
+            "WorkspaceManagerViewModel must NOT accept .deduplicated as successful outcome (prevents silent data loss)"
+        )
     }
 
     private func repositoryRoot() -> URL {

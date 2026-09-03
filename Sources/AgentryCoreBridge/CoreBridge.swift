@@ -573,6 +573,57 @@ protocol CoreRuntimeTransport: Sendable {
     ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1
     func agentShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
+    // MARK: - ADR-0012 Direct Workspace Mutation & Quarantine APIs
+    func workspaceCreateDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        workspaceName: String,
+        documentBytes: Data,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1
+
+    func workspaceSaveDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        documentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1
+
+    func workspaceDeleteDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1
+
+    func workspaceMutateWorkingDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        candidateDocumentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1
+
+    func workspaceIsQuarantinedV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID
+    ) throws -> (isQuarantined: Bool, reason: String?)
+
+    func workspaceQuarantinedWorkspacesV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String
+    ) throws -> [(workspaceID: UUID, reason: String)]
+
     /// Forensic strings for the most recent panic(s) recorded by the Rust
     /// process-wide panic hook, most-recent last -- not scoped to this
     /// transport's runtime instance, and not limited to panics that a
@@ -2508,6 +2559,199 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func workspaceCreateDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        workspaceName: String,
+        documentBytes: Data,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        do {
+            let response = try runtime.workspaceCreateDirectV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory,
+                workspaceId: workspaceID.uuidString.lowercased(),
+                workspaceName: workspaceName,
+                documentBytes: documentBytes,
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationId: operationID.uuidString.lowercased(),
+                fingerprint: fingerprint
+            ))
+            if let errorKind = response.errorKind {
+                guard response.result == nil else {
+                    throw CoreTransportError.unexpected("workspace create direct response contains result and error")
+                }
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            guard let result = response.result else {
+                throw CoreTransportError.unexpected("workspace create direct response missing result and error")
+            }
+            return try Self.workspaceCommandResult(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceSaveDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        documentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        do {
+            let response = try runtime.workspaceSaveDirectV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory,
+                workspaceId: workspaceID.uuidString.lowercased(),
+                documentBytes: documentBytes,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationId: operationID.uuidString.lowercased(),
+                fingerprint: fingerprint
+            ))
+            if let errorKind = response.errorKind {
+                guard response.result == nil else {
+                    throw CoreTransportError.unexpected("workspace save direct response contains result and error")
+                }
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            guard let result = response.result else {
+                throw CoreTransportError.unexpected("workspace save direct response missing result and error")
+            }
+            return try Self.workspaceCommandResult(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceDeleteDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        do {
+            let response = try runtime.workspaceDeleteDirectV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory,
+                workspaceId: workspaceID.uuidString.lowercased(),
+                expectedCatalogRevision: expectedCatalogRevision,
+                operationId: operationID.uuidString.lowercased()
+            ))
+            if let errorKind = response.errorKind {
+                guard response.result == nil else {
+                    throw CoreTransportError.unexpected("workspace delete direct response contains result and error")
+                }
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            guard let result = response.result else {
+                throw CoreTransportError.unexpected("workspace delete direct response missing result and error")
+            }
+            return try Self.workspaceCommandResult(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceMutateWorkingDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        candidateDocumentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        do {
+            let response = try runtime.workspaceMutateWorkingDirectV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory,
+                workspaceId: workspaceID.uuidString.lowercased(),
+                candidateDocumentBytes: candidateDocumentBytes,
+                expectedWorkingRevision: expectedWorkingRevision,
+                operationId: operationID.uuidString.lowercased()
+            ))
+            if let errorKind = response.errorKind {
+                guard response.result == nil else {
+                    throw CoreTransportError.unexpected("workspace mutate working direct response contains result and error")
+                }
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            guard let result = response.result else {
+                throw CoreTransportError.unexpected("workspace mutate working direct response missing result and error")
+            }
+            return try Self.workspaceCommandResult(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceIsQuarantinedV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID
+    ) throws -> (isQuarantined: Bool, reason: String?) {
+        do {
+            let response = try runtime.workspaceIsQuarantinedV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory,
+                workspaceId: workspaceID.uuidString.lowercased()
+            ))
+            if let errorKind = response.errorKind {
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            return (response.isQuarantined, response.reason)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceQuarantinedWorkspacesV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String
+    ) throws -> [(workspaceID: UUID, reason: String)] {
+        do {
+            let response = try runtime.workspaceQuarantinedWorkspacesV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                storageDirectory: storageDirectory
+            ))
+            if let errorKind = response.errorKind {
+                throw try Self.workspaceWorkingJournalValidationError(errorKind, futureSchemaVersion: nil)
+            }
+            return response.entries.compactMap { entry in
+                guard let id = UUID(uuidString: entry.workspaceId) else { return nil }
+                return (id, entry.reason)
+            }
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private static func workspaceCreateDirective(
         _ response: AgentryUniFFIRaw.CoreWorkspaceCreateDirectiveResponseV1
     ) throws -> CoreWorkspaceCreateDirectiveV1 {
@@ -4222,6 +4466,10 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .staleRecoverySnapshot: .staleRecoverySnapshot
         case .fullRecoveryRequired: .fullRecoveryRequired
         case .invalidTransaction: .invalidTransaction
+        case .workspaceQuarantined: .workspaceQuarantined
+        case .persistenceIoError: .persistenceIoError
+        case .unsupportedCatalogSchemaVersion: .unsupportedCatalogSchemaVersion
+        case .storageLeaseRequired: .storageLeaseRequired
         }
     }
 

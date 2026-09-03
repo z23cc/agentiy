@@ -3691,6 +3691,8 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
 
+    func isWorkspaceQuarantined(workspaceId: String) throws  -> Bool
+
     func prepareExternalObservationRecovery(request: CoreWorkspaceExternalObservationRecoveryRequestV1) throws  -> CoreWorkspaceExternalObservationRecoveryResponseV1
 
     func prepareSemanticFullRecovery(recovery: CoreWorkspaceSemanticFullRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
@@ -3698,6 +3700,12 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
     func prepareSemanticTargetRecovery(recovery: CoreWorkspaceSemanticTargetRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
 
     func publishAuthorityState(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1], draft: CoreWorkspaceAuthorityPublicationDraftV1) throws  -> CoreWorkspaceAuthorityPublicationResponseV1
+
+    func quarantineReason(workspaceId: String) throws  -> String?
+
+    func quarantineState() throws  -> CoreWorkspaceQuarantineStateResponseV1
+
+    func quarantinedWorkspaces() throws  -> [String]
 
     func synchronizeAuthorityProjection(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1]) throws  -> CoreWorkspaceAuthorityProjectionSyncResponseV1
 
@@ -3803,6 +3811,16 @@ open func diagnostics()throws  -> CoreWorkspaceCommandAdmissionMutationResponseV
 })
 }
 
+open func isWorkspaceQuarantined(workspaceId: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_is_workspace_quarantined(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(workspaceId),uniffiCallStatus
+    )
+})
+}
+
 open func prepareExternalObservationRecovery(request: CoreWorkspaceExternalObservationRecoveryRequestV1)throws  -> CoreWorkspaceExternalObservationRecoveryResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -3840,6 +3858,34 @@ open func publishAuthorityState(workspaces: [CoreWorkspaceProjectionPublishedWor
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeCoreWorkspaceProjectionPublishedWorkspaceV1.lower(workspaces),
         FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1_lower(draft),uniffiCallStatus
+    )
+})
+}
+
+open func quarantineReason(workspaceId: String)throws  -> String?  {
+    return try  FfiConverterOptionString.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_quarantine_reason(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(workspaceId),uniffiCallStatus
+    )
+})
+}
+
+open func quarantineState()throws  -> CoreWorkspaceQuarantineStateResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_quarantine_state(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func quarantinedWorkspaces()throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_quarantined_workspaces(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3909,6 +3955,8 @@ public protocol CorePreparedWorkspaceCreateTransactionV1Protocol: AnyObject, Sen
     func acquireAuthorityPermit() throws  -> CoreWorkspaceCreateAuthorityPermitV1
 
     func close()
+
+    func commitDirect(storageDirectory: String) throws  -> CoreWorkspaceCreateDirectiveResponseV1
 
     func finishCommandAuthority() throws  -> CoreWorkspaceCommandAuthorityFinalizationV1
 
@@ -3985,6 +4033,16 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commitDirect(storageDirectory: String)throws  -> CoreWorkspaceCreateDirectiveResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCreateDirectiveResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecreatetransactionv1_commit_direct(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(storageDirectory),uniffiCallStatus
+    )
+})
 }
 
 open func finishCommandAuthority()throws  -> CoreWorkspaceCommandAuthorityFinalizationV1  {
@@ -4071,6 +4129,8 @@ public protocol CorePreparedWorkspaceDeleteTransactionV1Protocol: AnyObject, Sen
 
     func close()
 
+    func commitDirect(storageDirectory: String) throws  -> CoreWorkspaceDeleteDirectiveResponseV1
+
     func finishCommandAuthority(cleanupWarningsBytes: Data?) throws  -> CoreWorkspaceDeleteCleanupFinalizationResponseV1
 
     func nextDirective() throws  -> CoreWorkspaceDeleteDirectiveResponseV1
@@ -4148,6 +4208,16 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commitDirect(storageDirectory: String)throws  -> CoreWorkspaceDeleteDirectiveResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceDeleteDirectiveResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_commit_direct(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(storageDirectory),uniffiCallStatus
+    )
+})
 }
 
 open func finishCommandAuthority(cleanupWarningsBytes: Data?)throws  -> CoreWorkspaceDeleteCleanupFinalizationResponseV1  {
@@ -4245,6 +4315,8 @@ public protocol CorePreparedWorkspaceJournalMutationTransactionV1Protocol: AnyOb
 
     func close()
 
+    func commitDirect(storageDirectory: String) throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1
+
     func finishClaimlessAuthorityPublication() throws  -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1
 
     func finishCommandAuthority() throws  -> CoreWorkspaceCommandAuthorityFinalizationV1
@@ -4322,6 +4394,16 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commitDirect(storageDirectory: String)throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceJournalMutationDirectiveResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacejournalmutationtransactionv1_commit_direct(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(storageDirectory),uniffiCallStatus
+    )
+})
 }
 
 open func finishClaimlessAuthorityPublication()throws  -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1  {
@@ -4417,6 +4499,8 @@ public protocol CorePreparedWorkspaceSaveTransactionV1Protocol: AnyObject, Senda
 
     func close()
 
+    func commitDirect(storageDirectory: String) throws  -> CoreWorkspaceSaveDirectiveResponseV1
+
     func finishCommandAuthority() throws  -> CoreWorkspaceCommandAuthorityFinalizationV1
 
     func nextDirective() throws  -> CoreWorkspaceSaveDirectiveResponseV1
@@ -4492,6 +4576,16 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commitDirect(storageDirectory: String)throws  -> CoreWorkspaceSaveDirectiveResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSaveDirectiveResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_commit_direct(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(storageDirectory),uniffiCallStatus
+    )
+})
 }
 
 open func finishCommandAuthority()throws  -> CoreWorkspaceCommandAuthorityFinalizationV1  {
@@ -5027,7 +5121,11 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandIdentityResponseV1
 
+    func workspaceCreateDirectV1(request: CoreWorkspaceCreateDirectRequestV1) throws  -> CoreWorkspaceCommandResponseV1
+
     func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
+
+    func workspaceDeleteDirectV1(request: CoreWorkspaceDeleteDirectRequestV1) throws  -> CoreWorkspaceCommandResponseV1
 
     func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
 
@@ -5035,9 +5133,17 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjectionRequestV1) throws  -> CoreWorkspaceDocumentProjectionV1
 
+    func workspaceIsQuarantinedV1(request: CoreWorkspaceIsQuarantinedRequestV1) throws  -> CoreWorkspaceIsQuarantinedResponseV1
+
     func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
 
+    func workspaceMutateWorkingDirectV1(request: CoreWorkspaceMutateWorkingDirectRequestV1) throws  -> CoreWorkspaceCommandResponseV1
+
     func workspacePendingSaveResolveV1(request: CoreWorkspacePendingSaveRecoveryRequestV1) throws  -> CoreWorkspacePendingSaveRecoveryResponseV1
+
+    func workspaceQuarantinedWorkspacesV1(request: CoreWorkspaceQuarantinedWorkspacesRequestV1) throws  -> CoreWorkspaceQuarantinedWorkspacesResponseV1
+
+    func workspaceSaveDirectV1(request: CoreWorkspaceSaveDirectRequestV1) throws  -> CoreWorkspaceCommandResponseV1
 
     func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
 
@@ -6256,6 +6362,16 @@ open func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityReques
 })
 }
 
+open func workspaceCreateDirectV1(request: CoreWorkspaceCreateDirectRequestV1)throws  -> CoreWorkspaceCommandResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_create_direct_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCreateDirectRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceCreateTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCreateTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -6263,6 +6379,16 @@ open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransact
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceCreateTransactionRequestV1_lower(request),
         FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
+    )
+})
+}
+
+open func workspaceDeleteDirectV1(request: CoreWorkspaceDeleteDirectRequestV1)throws  -> CoreWorkspaceCommandResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_delete_direct_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -6298,6 +6424,16 @@ open func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjection
 })
 }
 
+open func workspaceIsQuarantinedV1(request: CoreWorkspaceIsQuarantinedRequestV1)throws  -> CoreWorkspaceIsQuarantinedResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_is_quarantined_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceJournalMutationTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -6309,12 +6445,42 @@ open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJourn
 })
 }
 
+open func workspaceMutateWorkingDirectV1(request: CoreWorkspaceMutateWorkingDirectRequestV1)throws  -> CoreWorkspaceCommandResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_mutate_working_direct_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func workspacePendingSaveResolveV1(request: CoreWorkspacePendingSaveRecoveryRequestV1)throws  -> CoreWorkspacePendingSaveRecoveryResponseV1  {
     return try  FfiConverterTypeCoreWorkspacePendingSaveRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_pending_save_resolve_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspacePendingSaveRecoveryRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func workspaceQuarantinedWorkspacesV1(request: CoreWorkspaceQuarantinedWorkspacesRequestV1)throws  -> CoreWorkspaceQuarantinedWorkspacesResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_quarantined_workspaces_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func workspaceSaveDirectV1(request: CoreWorkspaceSaveDirectRequestV1)throws  -> CoreWorkspaceCommandResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_save_direct_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceSaveDirectRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -21272,6 +21438,60 @@ public func FfiConverterTypeCoreWorkspaceCommandIdentityV1_lower(_ value: CoreWo
 }
 
 
+public struct CoreWorkspaceCommandResponseV1: Equatable, Hashable {
+    public let result: CoreWorkspaceCommandResultV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(result: CoreWorkspaceCommandResultV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?) {
+        self.result = result
+        self.errorKind = errorKind
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandResponseV1 {
+        return
+            try CoreWorkspaceCommandResponseV1(
+                result: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.result, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResponseV1_lower(_ value: CoreWorkspaceCommandResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCommandResultV1: Equatable, Hashable {
     public let workspaceId: String
     public let operation: CoreWorkspaceRecordedOperationV1
@@ -21618,6 +21838,88 @@ public func FfiConverterTypeCoreWorkspaceCreateCommitReceiptV1_lower(_ value: Co
 }
 
 
+public struct CoreWorkspaceCreateDirectRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+    public let workspaceId: String
+    public let workspaceName: String
+    public let documentBytes: Data
+    public let expectedCatalogRevision: UInt64
+    public let operationId: String
+    public let fingerprint: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String, workspaceId: String, workspaceName: String, documentBytes: Data, expectedCatalogRevision: UInt64, operationId: String, fingerprint: String?) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+        self.workspaceId = workspaceId
+        self.workspaceName = workspaceName
+        self.documentBytes = documentBytes
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.operationId = operationId
+        self.fingerprint = fingerprint
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCreateDirectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCreateDirectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCreateDirectRequestV1 {
+        return
+            try CoreWorkspaceCreateDirectRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                workspaceName: FfiConverterString.read(from: &buf),
+                documentBytes: FfiConverterData.read(from: &buf),
+                expectedCatalogRevision: FfiConverterUInt64.read(from: &buf),
+                operationId: FfiConverterString.read(from: &buf),
+                fingerprint: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCreateDirectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.workspaceName, into: &buf)
+        FfiConverterData.write(value.documentBytes, into: &buf)
+        FfiConverterUInt64.write(value.expectedCatalogRevision, into: &buf)
+        FfiConverterString.write(value.operationId, into: &buf)
+        FfiConverterOptionString.write(value.fingerprint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCreateDirectRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCreateDirectRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceCreateDirectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCreateDirectRequestV1_lower(_ value: CoreWorkspaceCreateDirectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCreateDirectRequestV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCreateDirectiveResponseV1: Equatable, Hashable {
     public let directive: CoreWorkspaceCreateDirectiveV1?
     public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
@@ -21941,6 +22243,76 @@ public func FfiConverterTypeCoreWorkspaceDeleteCommitReceiptV1_lift(_ buf: RustB
 #endif
 public func FfiConverterTypeCoreWorkspaceDeleteCommitReceiptV1_lower(_ value: CoreWorkspaceDeleteCommitReceiptV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceDeleteCommitReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceDeleteDirectRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+    public let workspaceId: String
+    public let expectedCatalogRevision: UInt64
+    public let operationId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String, workspaceId: String, expectedCatalogRevision: UInt64, operationId: String) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+        self.workspaceId = workspaceId
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.operationId = operationId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceDeleteDirectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceDeleteDirectRequestV1 {
+        return
+            try CoreWorkspaceDeleteDirectRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                expectedCatalogRevision: FfiConverterUInt64.read(from: &buf),
+                operationId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceDeleteDirectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterUInt64.write(value.expectedCatalogRevision, into: &buf)
+        FfiConverterString.write(value.operationId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceDeleteDirectRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1_lower(_ value: CoreWorkspaceDeleteDirectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceDeleteDirectRequestV1.lower(value)
 }
 
 
@@ -22602,6 +22974,126 @@ public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionR
 }
 
 
+public struct CoreWorkspaceIsQuarantinedRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+    public let workspaceId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String, workspaceId: String) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+        self.workspaceId = workspaceId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceIsQuarantinedRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceIsQuarantinedRequestV1 {
+        return
+            try CoreWorkspaceIsQuarantinedRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceIsQuarantinedRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceIsQuarantinedRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1_lower(_ value: CoreWorkspaceIsQuarantinedRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceIsQuarantinedRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceIsQuarantinedResponseV1: Equatable, Hashable {
+    public let isQuarantined: Bool
+    public let reason: String?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(isQuarantined: Bool, reason: String?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?) {
+        self.isQuarantined = isQuarantined
+        self.reason = reason
+        self.errorKind = errorKind
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceIsQuarantinedResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceIsQuarantinedResponseV1 {
+        return
+            try CoreWorkspaceIsQuarantinedResponseV1(
+                isQuarantined: FfiConverterBool.read(from: &buf),
+                reason: FfiConverterOptionString.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceIsQuarantinedResponseV1, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.isQuarantined, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceIsQuarantinedResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1_lower(_ value: CoreWorkspaceIsQuarantinedResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceIsQuarantinedResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceJournalMutationCommitReceiptV1: Equatable, Hashable {
     public let workspaceId: String
     public let requestDigest: String
@@ -22867,6 +23359,80 @@ public func FfiConverterTypeCoreWorkspaceJournalMutationTransactionRequestV1_lif
 #endif
 public func FfiConverterTypeCoreWorkspaceJournalMutationTransactionRequestV1_lower(_ value: CoreWorkspaceJournalMutationTransactionRequestV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceJournalMutationTransactionRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceMutateWorkingDirectRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+    public let workspaceId: String
+    public let candidateDocumentBytes: Data
+    public let expectedWorkingRevision: UInt64
+    public let operationId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String, workspaceId: String, candidateDocumentBytes: Data, expectedWorkingRevision: UInt64, operationId: String) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+        self.workspaceId = workspaceId
+        self.candidateDocumentBytes = candidateDocumentBytes
+        self.expectedWorkingRevision = expectedWorkingRevision
+        self.operationId = operationId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceMutateWorkingDirectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceMutateWorkingDirectRequestV1 {
+        return
+            try CoreWorkspaceMutateWorkingDirectRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                candidateDocumentBytes: FfiConverterData.read(from: &buf),
+                expectedWorkingRevision: FfiConverterUInt64.read(from: &buf),
+                operationId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceMutateWorkingDirectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterData.write(value.candidateDocumentBytes, into: &buf)
+        FfiConverterUInt64.write(value.expectedWorkingRevision, into: &buf)
+        FfiConverterString.write(value.operationId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceMutateWorkingDirectRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1_lower(_ value: CoreWorkspaceMutateWorkingDirectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceMutateWorkingDirectRequestV1.lower(value)
 }
 
 
@@ -23540,6 +24106,226 @@ public func FfiConverterTypeCoreWorkspaceProtectedAgentIdentityV1_lower(_ value:
 }
 
 
+public struct CoreWorkspaceQuarantineEntryV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, reason: String) {
+        self.workspaceId = workspaceId
+        self.reason = reason
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceQuarantineEntryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceQuarantineEntryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceQuarantineEntryV1 {
+        return
+            try CoreWorkspaceQuarantineEntryV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceQuarantineEntryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantineEntryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceQuarantineEntryV1 {
+    return try FfiConverterTypeCoreWorkspaceQuarantineEntryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantineEntryV1_lower(_ value: CoreWorkspaceQuarantineEntryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceQuarantineEntryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceQuarantineStateResponseV1: Equatable, Hashable {
+    public let entries: [CoreWorkspaceQuarantineEntryV1]
+    public let globalHealth: CoreWorkspaceProjectionHealthV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(entries: [CoreWorkspaceQuarantineEntryV1], globalHealth: CoreWorkspaceProjectionHealthV1) {
+        self.entries = entries
+        self.globalHealth = globalHealth
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceQuarantineStateResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceQuarantineStateResponseV1 {
+        return
+            try CoreWorkspaceQuarantineStateResponseV1(
+                entries: FfiConverterSequenceTypeCoreWorkspaceQuarantineEntryV1.read(from: &buf),
+                globalHealth: FfiConverterTypeCoreWorkspaceProjectionHealthV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceQuarantineStateResponseV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCoreWorkspaceQuarantineEntryV1.write(value.entries, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionHealthV1.write(value.globalHealth, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceQuarantineStateResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1_lower(_ value: CoreWorkspaceQuarantineStateResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceQuarantineStateResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceQuarantinedWorkspacesRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceQuarantinedWorkspacesRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceQuarantinedWorkspacesRequestV1 {
+        return
+            try CoreWorkspaceQuarantinedWorkspacesRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceQuarantinedWorkspacesRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceQuarantinedWorkspacesRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1_lower(_ value: CoreWorkspaceQuarantinedWorkspacesRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceQuarantinedWorkspacesResponseV1: Equatable, Hashable {
+    public let entries: [CoreWorkspaceQuarantineEntryV1]
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(entries: [CoreWorkspaceQuarantineEntryV1], errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?) {
+        self.entries = entries
+        self.errorKind = errorKind
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceQuarantinedWorkspacesResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceQuarantinedWorkspacesResponseV1 {
+        return
+            try CoreWorkspaceQuarantinedWorkspacesResponseV1(
+                entries: FfiConverterSequenceTypeCoreWorkspaceQuarantineEntryV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceQuarantinedWorkspacesResponseV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCoreWorkspaceQuarantineEntryV1.write(value.entries, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceQuarantinedWorkspacesResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1_lower(_ value: CoreWorkspaceQuarantinedWorkspacesResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceQuarantinedWorkspacesResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceRecordedOperationV1: Equatable, Hashable {
     public let operationId: String
     public let fingerprint: String
@@ -23709,6 +24495,88 @@ public func FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1_lift(_ buf: RustBuf
 #endif
 public func FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1_lower(_ value: CoreWorkspaceSaveCommitReceiptV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSaveDirectRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let storageDirectory: String
+    public let workspaceId: String
+    public let documentBytes: Data
+    public let expectedWorkingRevision: UInt64
+    public let expectedCatalogRevision: UInt64
+    public let operationId: String
+    public let fingerprint: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, storageDirectory: String, workspaceId: String, documentBytes: Data, expectedWorkingRevision: UInt64, expectedCatalogRevision: UInt64, operationId: String, fingerprint: String?) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.storageDirectory = storageDirectory
+        self.workspaceId = workspaceId
+        self.documentBytes = documentBytes
+        self.expectedWorkingRevision = expectedWorkingRevision
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.operationId = operationId
+        self.fingerprint = fingerprint
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSaveDirectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSaveDirectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSaveDirectRequestV1 {
+        return
+            try CoreWorkspaceSaveDirectRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                storageDirectory: FfiConverterString.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                documentBytes: FfiConverterData.read(from: &buf),
+                expectedWorkingRevision: FfiConverterUInt64.read(from: &buf),
+                expectedCatalogRevision: FfiConverterUInt64.read(from: &buf),
+                operationId: FfiConverterString.read(from: &buf),
+                fingerprint: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSaveDirectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.storageDirectory, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterData.write(value.documentBytes, into: &buf)
+        FfiConverterUInt64.write(value.expectedWorkingRevision, into: &buf)
+        FfiConverterUInt64.write(value.expectedCatalogRevision, into: &buf)
+        FfiConverterString.write(value.operationId, into: &buf)
+        FfiConverterOptionString.write(value.fingerprint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSaveDirectRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSaveDirectRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceSaveDirectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSaveDirectRequestV1_lower(_ value: CoreWorkspaceSaveDirectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSaveDirectRequestV1.lower(value)
 }
 
 
@@ -39063,6 +39931,10 @@ public enum CoreWorkspaceWorkingJournalValidationErrorKindV1: Equatable, Hashabl
     case staleRecoverySnapshot
     case fullRecoveryRequired
     case invalidTransaction
+    case workspaceQuarantined
+    case persistenceIoError
+    case unsupportedCatalogSchemaVersion
+    case storageLeaseRequired
 
 
 
@@ -39119,6 +39991,14 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
         case 17: return .fullRecoveryRequired
 
         case 18: return .invalidTransaction
+
+        case 19: return .workspaceQuarantined
+
+        case 20: return .persistenceIoError
+
+        case 21: return .unsupportedCatalogSchemaVersion
+
+        case 22: return .storageLeaseRequired
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -39198,6 +40078,22 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
 
         case .invalidTransaction:
             writeInt(&buf, Int32(18))
+
+
+        case .workspaceQuarantined:
+            writeInt(&buf, Int32(19))
+
+
+        case .persistenceIoError:
+            writeInt(&buf, Int32(20))
+
+
+        case .unsupportedCatalogSchemaVersion:
+            writeInt(&buf, Int32(21))
+
+
+        case .storageLeaseRequired:
+            writeInt(&buf, Int32(22))
 
         }
     }
@@ -43687,6 +44583,31 @@ fileprivate struct FfiConverterSequenceTypeCoreWorkspaceProtectedAgentIdentityV1
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceQuarantineEntryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceQuarantineEntryV1]
+
+    public static func write(_ value: [CoreWorkspaceQuarantineEntryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceQuarantineEntryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceQuarantineEntryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceQuarantineEntryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceQuarantineEntryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreWorkspaceRecordedOperationV1]
 
@@ -44590,6 +45511,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_diagnostics() != 57548) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_is_workspace_quarantined() != 19632) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_external_observation_recovery() != 9636) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -44602,6 +45526,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_publish_authority_state() != 26851) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_quarantine_reason() != 38699) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_quarantine_state() != 56028) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_quarantined_workspaces() != 44287) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_synchronize_authority_projection() != 35327) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -44609,6 +45542,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_close() != 47899) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_commit_direct() != 20436) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_finish_command_authority() != 19522) {
@@ -44624,6 +45560,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_close() != 1254) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_commit_direct() != 27691) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_finish_command_authority() != 60696) {
@@ -44644,6 +45583,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_close() != 56432) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_commit_direct() != 34979) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_finish_claimless_authority_publication() != 10827) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -44660,6 +45602,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_close() != 43264) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_commit_direct() != 48950) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_finish_command_authority() != 15958) {
@@ -44950,7 +45895,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_command_identity_v1() != 62052) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_direct_v1() != 10703) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_transaction_begin_v1() != 34746) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_direct_v1() != 34693) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 16427) {
@@ -44962,10 +45913,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_document_projection_v1() != 47667) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_is_quarantined_v1() != 18640) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_journal_mutation_transaction_begin_v1() != 36295) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_mutate_working_direct_v1() != 16985) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_pending_save_resolve_v1() != 12179) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_quarantined_workspaces_v1() != 11330) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_direct_v1() != 48285) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_transaction_begin_v1() != 63468) {

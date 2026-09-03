@@ -571,6 +571,61 @@
     "fuzzDecision": "this surface does not decode untrusted wire bytes; JSON-RPC framing remains owned by provider_json_rpc and is already fuzzed by existing provider/host frame targets. Invariants are covered by property tests (rust/crates/runtime/tests/agent_provider_semantics_property.rs) and the Swift differential corpus.",
     "productFallback": "none"
   },
+  "workspaceAuthorityV1": {
+    "additiveInAbiEpoch": 1,
+    "abiEpochDecision": "no bump: additive-only, new CoreRuntime exports, transaction commit_direct methods, and CorePreparedWorkspaceCommandAdmissionV1 query methods; buildFingerprint and bindingChecksum rotate once via xtask generate.",
+    "adr": "docs/architecture/adr-0012-workspace-mutation-authority-persistence.md",
+    "rootCauseDiagnosis": "docs/investigations/workspace-authority-fix-20260901.md",
+    "contractVersion": 1,
+    "schemaVersion": 1,
+    "singleWriterLease": {
+      "protocolVersion": 1,
+      "lockFile": "workspace-authority-v1.lock",
+      "ownerMetadataFile": "workspace-authority-owner-v1.json",
+      "flockMode": "LOCK_EX | LOCK_NB",
+      "scopeDigestPrefix": "agentry-workspace-authority-lease-v1\\0",
+      "heartbeatsOrTtls": "forbidden - kernel flock release upon process death is sole preemption"
+    },
+    "durabilityProtocol": {
+      "pattern": "temp_file_in_same_dir + fsync + atomic_rename + parent_dir_fsync",
+      "stagingSuffix": ".<uuid>.tmp",
+      "fileMode": "0600",
+      "dirMode": "0700"
+    },
+    "limits": {
+      "maxDocumentBytes": 33554432,
+      "maxCatalogBytes": 67108864,
+      "maxJournalBytes": 134217728,
+      "maxJournalOperations": 256,
+      "journalRetentionDays": 7
+    },
+    "faultIsolation": {
+      "model": "per-workspace row-level quarantine",
+      "aggregateAccumulator": "forbidden (admission_authoritative &= authoritative retired)",
+      "globalHealthInvariant": "Writable as long as catalog container is valid",
+      "corruptedEntryState": "Unavailable(reason)"
+    },
+    "exports": [
+      "CoreRuntime.workspaceCreateDirectV1",
+      "CoreRuntime.workspaceSaveDirectV1",
+      "CoreRuntime.workspaceDeleteDirectV1",
+      "CoreRuntime.workspaceMutateWorkingDirectV1",
+      "CoreRuntime.workspaceIsQuarantinedV1",
+      "CoreRuntime.workspaceQuarantinedWorkspacesV1",
+      "CorePreparedWorkspaceCommandAdmissionV1.isWorkspaceQuarantined",
+      "CorePreparedWorkspaceCommandAdmissionV1.quarantinedWorkspaces",
+      "CorePreparedWorkspaceCommandAdmissionV1.quarantineReason",
+      "CorePreparedWorkspaceCommandAdmissionV1.quarantineState",
+      "CorePreparedWorkspaceCreateTransactionV1.commitDirect",
+      "CorePreparedWorkspaceSaveTransactionV1.commitDirect",
+      "CorePreparedWorkspaceDeleteTransactionV1.commitDirect",
+      "CorePreparedWorkspaceJournalMutationTransactionV1.commitDirect"
+    ],
+    "fuzzTargets": [],
+    "fuzzDecision": "no arbitrary raw wire frames decoded over this surface; typed mirrors and bounded JSON payloads are tested via proptest property suites (workspace_isolation_property, workspace_decode_safety_property, workspace_cas_monotonicity_property)",
+    "runtimeIdentityRequired": true,
+    "productFallback": "none"
+  },
   "fixtureManifest": "rust/benchmarks/fixtures/v1/manifest.json",
   "sloRegistry": "rust/benchmarks/slo-v1.json",
   "exportsInventory": "rust/ffi-contract/exports.txt"

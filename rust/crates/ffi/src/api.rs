@@ -26,18 +26,25 @@ use crate::types::{
     CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
     CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
     CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCommandIdentityV1,
-    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCommandResultV1,
+    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCommandResponseV1,
+    CoreWorkspaceCommandResultV1, CoreWorkspaceCreateDirectRequestV1,
     CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
-    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
-    CoreWorkspaceExternalObservationRecoveryPlanV1,
+    CoreWorkspaceDeleteDirectRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceExternalObservationRecoveryPlanV1,
     CoreWorkspaceExternalObservationRecoveryRequestV1,
     CoreWorkspaceExternalObservationRecoveryTransactionRequestV1,
-    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
-    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
-    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
-    CoreWorkspacePersistenceMetadataValidationV1, CoreWorkspaceRecordedOperationV1,
-    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
+    CoreWorkspaceIsQuarantinedRequestV1, CoreWorkspaceIsQuarantinedResponseV1,
+    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationFinalizationV1,
+    CoreWorkspaceJournalMutationTransactionRequestV1,
+    CoreWorkspaceMutateWorkingDirectRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
+    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
+    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspacePersistenceMetadataValidationV1,
+    CoreWorkspaceQuarantineStateResponseV1,
+    CoreWorkspaceQuarantinedWorkspacesRequestV1, CoreWorkspaceQuarantinedWorkspacesResponseV1,
+    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
+    CoreWorkspaceSaveDirectRequestV1, CoreWorkspaceSaveDirectiveV1,
+    CoreWorkspaceSaveFinalizationV1,
     CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceSemanticFullRecoveryV1,
     CoreWorkspaceSemanticInitialRecoveryRequestV1, CoreWorkspaceSemanticPreflightV1,
     CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, CoreWorkspaceSemanticRecoveryPreviewV1,
@@ -796,6 +803,43 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
+    pub fn is_workspace_quarantined(&self, workspace_id: String) -> Result<bool, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            self.inner
+                .is_workspace_quarantined(&workspace_id)
+                .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn quarantined_workspaces(&self) -> Result<Vec<String>, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            self.inner
+                .quarantined_workspaces()
+                .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn quarantine_reason(&self, workspace_id: String) -> Result<Option<String>, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            self.inner
+                .quarantine_reason(&workspace_id)
+                .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn quarantine_state(&self) -> Result<CoreWorkspaceQuarantineStateResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            self.inner
+                .quarantine_state()
+                .map(Into::into)
+                .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
             self.inner.close();
@@ -1444,6 +1488,46 @@ self.inner.command_result().ok().flatten(),
         })
     }
 
+    pub fn commit_direct(
+        &self,
+        storage_directory: String,
+    ) -> Result<CoreWorkspaceJournalMutationDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let paths = runtime::workspace_storage_paths::WorkspaceStoragePaths::canonical(
+                std::path::PathBuf::from(storage_directory),
+            );
+            let result = self.inner.commit_direct(&paths);
+            if result.is_ok() {
+                let _ = finish_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
+                    self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
+                );
+            }
+            Ok(match result {
+                Ok(receipt) => CoreWorkspaceJournalMutationDirectiveResponseV1 {
+                    directive: Some(CoreWorkspaceJournalMutationDirectiveV1::Committed {
+                        receipt: receipt.into(),
+                        finalization: CoreWorkspaceJournalMutationFinalizationV1::Finalized,
+                    }),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceJournalMutationDirectiveResponseV1 {
+                        directive: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
             let _terminal_guard = self
@@ -1653,6 +1737,46 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
                 self.command_claim.as_ref(),
                 self.inner.command_result().ok().flatten(),
             ))
+        })
+    }
+
+    pub fn commit_direct(
+        &self,
+        storage_directory: String,
+    ) -> Result<CoreWorkspaceSaveDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let paths = runtime::workspace_storage_paths::WorkspaceStoragePaths::canonical(
+                std::path::PathBuf::from(storage_directory),
+            );
+            let result = self.inner.commit_direct(&paths);
+            if result.is_ok() {
+                let _ = finish_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
+                    self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
+                );
+            }
+            Ok(match result {
+                Ok(receipt) => CoreWorkspaceSaveDirectiveResponseV1 {
+                    directive: Some(CoreWorkspaceSaveDirectiveV1::Committed {
+                        receipt: receipt.into(),
+                        finalization: CoreWorkspaceSaveFinalizationV1::Finalized,
+                    }),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceSaveDirectiveResponseV1 {
+                        directive: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 
@@ -1894,6 +2018,45 @@ self.inner.command_result().ok().flatten(),
                 self.command_claim.as_ref(),
                 self.inner.command_result().ok().flatten(),
             ))
+        })
+    }
+
+    pub fn commit_direct(
+        &self,
+        storage_directory: String,
+    ) -> Result<CoreWorkspaceCreateDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let paths = runtime::workspace_storage_paths::WorkspaceStoragePaths::canonical(
+                std::path::PathBuf::from(storage_directory),
+            );
+            let result = self.inner.commit_direct(&paths);
+            if result.is_ok() {
+                let _ = finish_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
+                    self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
+                );
+            }
+            Ok(match result {
+                Ok(receipt) => CoreWorkspaceCreateDirectiveResponseV1 {
+                    directive: Some(CoreWorkspaceCreateDirectiveV1::Committed {
+                        receipt: receipt.into(),
+                    }),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceCreateDirectiveResponseV1 {
+                        directive: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 
@@ -2168,6 +2331,45 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.finish_delete_cleanup_locked(cleanup_warnings_bytes.as_deref())
+        })
+    }
+
+    pub fn commit_direct(
+        &self,
+        storage_directory: String,
+    ) -> Result<CoreWorkspaceDeleteDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let paths = runtime::workspace_storage_paths::WorkspaceStoragePaths::canonical(
+                std::path::PathBuf::from(storage_directory),
+            );
+            let result = self.inner.commit_direct(&paths);
+            if result.is_ok() {
+                let _ = finish_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
+                    self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
+                );
+            }
+            Ok(match result {
+                Ok(receipt) => CoreWorkspaceDeleteDirectiveResponseV1 {
+                    directive: Some(CoreWorkspaceDeleteDirectiveV1::Committed {
+                        receipt: receipt.into(),
+                    }),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceDeleteDirectiveResponseV1 {
+                        directive: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 
@@ -2798,6 +3000,26 @@ impl CoreRuntime {
                             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction,
                             None,
                         ),
+                        JournalError::WorkspaceQuarantined(_) => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::WorkspaceQuarantined,
+                            None,
+                        ),
+                        JournalError::PersistenceIoError(_) => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::PersistenceIoError,
+                            None,
+                        ),
+                        JournalError::UnsupportedCatalogSchemaVersion { .. } => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::UnsupportedCatalogSchemaVersion,
+                            None,
+                        ),
+                        JournalError::StorageLeaseRequired => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::StorageLeaseRequired,
+                            None,
+                        ),
+                        JournalError::StateConflict { .. } => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidRevisionState,
+                            None,
+                        ),
                     };
                     CoreWorkspaceWorkingJournalValidationResponseV1 {
                         validation: None,
@@ -3150,6 +3372,167 @@ impl CoreRuntime {
                     }
                 },
             )
+        })
+    }
+
+    pub fn workspace_create_direct_v1(
+        &self,
+        request: CoreWorkspaceCreateDirectRequestV1,
+    ) -> Result<CoreWorkspaceCommandResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_create_direct_v1(
+                &request.storage_directory,
+                &request.workspace_id,
+                &request.workspace_name,
+                &request.document_bytes,
+                request.expected_catalog_revision,
+                &request.operation_id,
+                request.fingerprint.as_deref(),
+            ) {
+                Ok(result) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: Some(result.into()),
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: None,
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
+        })
+    }
+
+    pub fn workspace_save_direct_v1(
+        &self,
+        request: CoreWorkspaceSaveDirectRequestV1,
+    ) -> Result<CoreWorkspaceCommandResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_save_direct_v1(
+                &request.storage_directory,
+                &request.workspace_id,
+                &request.document_bytes,
+                request.expected_working_revision,
+                request.expected_catalog_revision,
+                &request.operation_id,
+                request.fingerprint.as_deref(),
+            ) {
+                Ok(result) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: Some(result.into()),
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: None,
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
+        })
+    }
+
+    pub fn workspace_delete_direct_v1(
+        &self,
+        request: CoreWorkspaceDeleteDirectRequestV1,
+    ) -> Result<CoreWorkspaceCommandResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_delete_direct_v1(
+                &request.storage_directory,
+                &request.workspace_id,
+                request.expected_catalog_revision,
+                &request.operation_id,
+            ) {
+                Ok(result) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: Some(result.into()),
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: None,
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
+        })
+    }
+
+    pub fn workspace_mutate_working_direct_v1(
+        &self,
+        request: CoreWorkspaceMutateWorkingDirectRequestV1,
+    ) -> Result<CoreWorkspaceCommandResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_mutate_working_direct_v1(
+                &request.storage_directory,
+                &request.workspace_id,
+                &request.candidate_document_bytes,
+                request.expected_working_revision,
+                &request.operation_id,
+                None,
+            ) {
+                Ok(result) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: Some(result.into()),
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceCommandResponseV1 {
+                    result: None,
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
+        })
+    }
+
+    pub fn workspace_is_quarantined_v1(
+        &self,
+        request: CoreWorkspaceIsQuarantinedRequestV1,
+    ) -> Result<CoreWorkspaceIsQuarantinedResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_is_quarantined_direct_v1(
+                &request.storage_directory,
+                &request.workspace_id,
+            ) {
+                Ok((is_quarantined, reason)) => Ok(CoreWorkspaceIsQuarantinedResponseV1 {
+                    is_quarantined,
+                    reason,
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceIsQuarantinedResponseV1 {
+                    is_quarantined: false,
+                    reason: None,
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
+        })
+    }
+
+    pub fn workspace_quarantined_workspaces_v1(
+        &self,
+        request: CoreWorkspaceQuarantinedWorkspacesRequestV1,
+    ) -> Result<CoreWorkspaceQuarantinedWorkspacesResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            match runtime::workspace_persistence_journal::execute_workspace_quarantined_workspaces_direct_v1(
+                &request.storage_directory,
+            ) {
+                Ok(entries) => Ok(CoreWorkspaceQuarantinedWorkspacesResponseV1 {
+                    entries: entries.into_iter().map(Into::into).collect(),
+                    error_kind: None,
+                }),
+                Err(error) => Ok(CoreWorkspaceQuarantinedWorkspacesResponseV1 {
+                    entries: Vec::new(),
+                    error_kind: Some(workspace_journal_error(error).0),
+                }),
+            }
         })
     }
 
@@ -5408,6 +5791,26 @@ fn workspace_journal_error(
             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction,
             None,
         ),
+        JournalError::WorkspaceQuarantined(_) => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::WorkspaceQuarantined,
+            None,
+        ),
+        JournalError::PersistenceIoError(_) => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::PersistenceIoError,
+            None,
+        ),
+        JournalError::UnsupportedCatalogSchemaVersion { .. } => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::UnsupportedCatalogSchemaVersion,
+            None,
+        ),
+        JournalError::StorageLeaseRequired => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::StorageLeaseRequired,
+            None,
+        ),
+        JournalError::StateConflict { .. } => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidRevisionState,
+            None,
+        ),
     }
 }
 
@@ -5763,6 +6166,15 @@ mod tests {
             "updatedAt": 42.5
         }))
         .expect("catalog bytes");
+        let doc_bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "name": "Workspace",
+            "schemaVersion": 1,
+            "repoPaths": []
+        }))
+        .expect("doc bytes");
+        let doc_digest = runtime::workspace_persistence_journal::workspace_sha256_digest_hex(&doc_bytes);
+
         let journal_bytes = |operations: &[CoreWorkspaceRecordedOperationV1]| {
             let operations = operations
                 .iter()
@@ -5775,7 +6187,7 @@ mod tests {
                 "workspaceID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                 "fileURL": "file:///tmp/Workspace.json",
                 "revisions": {"workingRevision": 0, "savedRevision": 0},
-                "savedDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "savedDigest": doc_digest,
                 "contextRevisions": [],
                 "contextDigests": [],
                 "contextTombstones": [],
@@ -5792,7 +6204,9 @@ mod tests {
                     journal: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
                         bytes: journal_bytes(operations),
                     },
-                    saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                    saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
+                        bytes: doc_bytes.clone(),
+                    },
                     saved_revision: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
                 }],
                 deletions: Vec::new(),
@@ -6081,7 +6495,9 @@ mod tests {
                 journal: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
                     bytes: journal_bytes(std::slice::from_ref(&tombstone)),
                 },
-                saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
+                    bytes: doc_bytes.clone(),
+                },
                 saved_revision: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
                 deletion_sidecar: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
             })
@@ -8357,5 +8773,126 @@ mod tests {
             .expect("close subscription");
         core.agent_shutdown(identity, scope.scope_id)
             .expect("shutdown");
+    }
+
+    #[test]
+    fn workspace_quarantine_v1_ffi_surface_detects_corruption_and_isolates_faults() {
+        use std::fs;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_dir = std::env::temp_dir().join(format!(
+            "agentry-ffi-quarantine-test-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let storage_dir = temp_dir.to_str().unwrap().to_string();
+
+        let (core, identity, _) = initialized_core();
+        let contract = runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1;
+
+        let ws1_id = "11111111-0000-0000-0000-000000000001";
+        let ws2_id = "22222222-0000-0000-0000-000000000002";
+        let doc1 = serde_json::to_vec(&serde_json::json!({
+            "id": ws1_id,
+            "name": "Healthy Workspace",
+            "schemaVersion": 1,
+            "repoPaths": []
+        })).unwrap();
+        let doc2 = serde_json::to_vec(&serde_json::json!({
+            "id": ws2_id,
+            "name": "Corrupted Workspace",
+            "schemaVersion": 1,
+            "repoPaths": []
+        })).unwrap();
+
+        // 1. Create ws1 and ws2
+        let c1 = core.workspace_create_direct_v1(CoreWorkspaceCreateDirectRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws1_id.to_string(),
+            workspace_name: "Healthy Workspace".to_string(),
+            document_bytes: doc1.clone(),
+            expected_catalog_revision: 0,
+            operation_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            fingerprint: None,
+        }).expect("create ws1");
+        assert!(c1.result.is_some());
+
+        let c2 = core.workspace_create_direct_v1(CoreWorkspaceCreateDirectRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws2_id.to_string(),
+            workspace_name: "Corrupted Workspace".to_string(),
+            document_bytes: doc2.clone(),
+            expected_catalog_revision: 1,
+            operation_id: "00000000-0000-0000-0000-000000000002".to_string(),
+            fingerprint: None,
+        }).expect("create ws2");
+        assert!(c2.result.is_some());
+
+        // 2. Both healthy initially:
+        let q1 = core.workspace_is_quarantined_v1(CoreWorkspaceIsQuarantinedRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws1_id.to_string(),
+        }).expect("q1 check");
+        assert!(!q1.is_quarantined);
+        assert_eq!(q1.reason, None);
+
+        let q2 = core.workspace_is_quarantined_v1(CoreWorkspaceIsQuarantinedRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws2_id.to_string(),
+        }).expect("q2 check");
+        assert!(!q2.is_quarantined);
+
+        let list_initial = core.workspace_quarantined_workspaces_v1(CoreWorkspaceQuarantinedWorkspacesRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+        }).expect("list initial");
+        assert!(list_initial.entries.is_empty());
+
+        // 3. Corrupt ws2's workspace.json document
+        let paths = runtime::workspace_storage_paths::WorkspaceStoragePaths::canonical(temp_dir.clone());
+        let ws2_dir = runtime::workspace_storage_paths::default_workspace_directory_name("Corrupted Workspace", ws2_id);
+        let ws2_doc_path = paths.workspace_root.join(&ws2_dir).join("workspace.json");
+        fs::write(&ws2_doc_path, b"INVALID_JSON_CORRUPTION").unwrap();
+
+        // 4. Verify ws2 is now quarantined, but ws1 remains completely healthy!
+        let q1_after = core.workspace_is_quarantined_v1(CoreWorkspaceIsQuarantinedRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws1_id.to_string(),
+        }).expect("q1 check after");
+        assert!(!q1_after.is_quarantined);
+
+        let q2_after = core.workspace_is_quarantined_v1(CoreWorkspaceIsQuarantinedRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+            workspace_id: ws2_id.to_string(),
+        }).expect("q2 check after");
+        assert!(q2_after.is_quarantined);
+        assert!(q2_after.reason.is_some());
+
+        let list_after = core.workspace_quarantined_workspaces_v1(CoreWorkspaceQuarantinedWorkspacesRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: contract,
+            storage_directory: storage_dir.clone(),
+        }).expect("list after");
+        assert_eq!(list_after.entries.len(), 1);
+        assert_eq!(list_after.entries[0].workspace_id, ws2_id);
+        assert!(list_after.entries[0].reason.contains("workspace_document_decode_failed"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

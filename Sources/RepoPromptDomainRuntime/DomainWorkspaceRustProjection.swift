@@ -91,9 +91,9 @@ package struct DomainWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
     package let projectionDigest: String
 }
 
-/// Shared mappings for aggregate publication and immutable authority reads. Swift remains the
-/// durable document writer and supplies physical routing; no independent projection scope or
-/// comparison authority exists after P5-7i.
+/// Shared mappings for aggregate publication and immutable authority reads. Swift delegates
+/// mutations to Rust as the canonical persistence and mutation authority (ADR-0012). No
+/// intermediate Swift shadow state exists.
 package enum DomainWorkspaceRustProjection {
     package static func corePublishedWorkspace(
         _ workspace: DomainWorkspaceSnapshot
@@ -306,6 +306,39 @@ package enum DomainWorkspaceRustProjection {
             savedRevision: revisions.savedRevision,
             dirtyRevision: revisions.dirtyRevision
         )
+    }
+
+    package static func domainRevisionState(
+        _ revisions: CoreWorkspaceProjectionRevisionState?
+    ) -> DomainRevisionState? {
+        guard let revisions else { return nil }
+        return domainRevisionState(revisions)
+    }
+
+    package static func directCommandRevisionState(
+        _ revisions: CoreWorkspaceProjectionRevisionState?,
+        fallbackWorking: UInt64 = 1,
+        fallbackSaved: UInt64 = 1,
+        fallbackDirty: UInt64? = nil
+    ) -> DomainRevisionState {
+        if let revisions {
+            return domainRevisionState(revisions)
+        }
+        return DomainRevisionState(
+            workingRevision: fallbackWorking,
+            savedRevision: fallbackSaved,
+            dirtyRevision: fallbackDirty
+        )
+    }
+
+    package static func domainCommandDisposition(
+        _ disposition: CoreWorkspaceCommandResultDispositionV1
+    ) -> DomainCommandDisposition {
+        switch disposition {
+        case .applied: .applied
+        case .unchanged: .deduplicated
+        case .deleted: .applied
+        }
     }
 
     private static func domainHealth(

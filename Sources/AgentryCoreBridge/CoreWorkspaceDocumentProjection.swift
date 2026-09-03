@@ -78,6 +78,11 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case staleRecoverySnapshot
     case fullRecoveryRequired
     case invalidTransaction
+    // MARK: ADR-0012 Canonical Persistence & Quarantine Cases
+    case workspaceQuarantined
+    case persistenceIoError
+    case unsupportedCatalogSchemaVersion
+    case storageLeaseRequired
 }
 
 public enum CoreWorkspaceCommandOriginV1: Sendable, Equatable {
@@ -1749,6 +1754,100 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
+    public func createWorkspaceDirect(
+        storageDirectory: String,
+        workspaceID: UUID,
+        workspaceName: String,
+        documentBytes: Data,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        try context.transport.workspaceCreateDirectV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory,
+            workspaceID: workspaceID,
+            workspaceName: workspaceName,
+            documentBytes: documentBytes,
+            expectedCatalogRevision: expectedCatalogRevision,
+            operationID: operationID,
+            fingerprint: fingerprint
+        )
+    }
+
+    public func saveWorkspaceDirect(
+        storageDirectory: String,
+        workspaceID: UUID,
+        documentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        try context.transport.workspaceSaveDirectV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory,
+            workspaceID: workspaceID,
+            documentBytes: documentBytes,
+            expectedWorkingRevision: expectedWorkingRevision,
+            expectedCatalogRevision: expectedCatalogRevision,
+            operationID: operationID,
+            fingerprint: fingerprint
+        )
+    }
+
+    public func deleteWorkspaceDirect(
+        storageDirectory: String,
+        workspaceID: UUID,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        try context.transport.workspaceDeleteDirectV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory,
+            workspaceID: workspaceID,
+            expectedCatalogRevision: expectedCatalogRevision,
+            operationID: operationID
+        )
+    }
+
+    public func mutateWorkingDirect(
+        storageDirectory: String,
+        workspaceID: UUID,
+        candidateDocumentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        try context.transport.workspaceMutateWorkingDirectV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory,
+            workspaceID: workspaceID,
+            candidateDocumentBytes: candidateDocumentBytes,
+            expectedWorkingRevision: expectedWorkingRevision,
+            operationID: operationID
+        )
+    }
+
+    public func isWorkspaceQuarantined(
+        storageDirectory: String,
+        workspaceID: UUID
+    ) throws -> (isQuarantined: Bool, reason: String?) {
+        try context.transport.workspaceIsQuarantinedV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory,
+            workspaceID: workspaceID
+        )
+    }
+
+    public func quarantinedWorkspaces(
+        storageDirectory: String
+    ) throws -> [(workspaceID: UUID, reason: String)] {
+        try context.transport.workspaceQuarantinedWorkspacesV1(
+            identity: context.identity,
+            storageDirectory: storageDirectory
+        )
+    }
+
     /// Probes the exact prepared runtime identity without accepting any persistence artifact. A
     /// live runtime must reject the deliberately malformed bounded payload with the typed semantic
     /// error; a stopped or replaced runtime fails through the transport instead.
@@ -2116,5 +2215,67 @@ extension CoreRuntimeTransport {
         documentBytes: Data?
     ) throws -> CoreWorkspacePendingSaveRecoveryV1 {
         throw CoreTransportError.unexpected("workspace pending save recovery transport is unavailable")
+    }
+
+    func workspaceCreateDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        workspaceName: String,
+        documentBytes: Data,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        throw CoreTransportError.unexpected("workspace create direct transport is unavailable")
+    }
+
+    func workspaceSaveDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        documentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID,
+        fingerprint: String?
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        throw CoreTransportError.unexpected("workspace save direct transport is unavailable")
+    }
+
+    func workspaceDeleteDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        expectedCatalogRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        throw CoreTransportError.unexpected("workspace delete direct transport is unavailable")
+    }
+
+    func workspaceMutateWorkingDirectV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID,
+        candidateDocumentBytes: Data,
+        expectedWorkingRevision: UInt64,
+        operationID: UUID
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        throw CoreTransportError.unexpected("workspace mutate working direct transport is unavailable")
+    }
+
+    func workspaceIsQuarantinedV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String,
+        workspaceID: UUID
+    ) throws -> (isQuarantined: Bool, reason: String?) {
+        throw CoreTransportError.unexpected("workspace is quarantined transport is unavailable")
+    }
+
+    func workspaceQuarantinedWorkspacesV1(
+        identity: CoreRuntimeIdentity,
+        storageDirectory: String
+    ) throws -> [(workspaceID: UUID, reason: String)] {
+        throw CoreTransportError.unexpected("workspace quarantined workspaces transport is unavailable")
     }
 }

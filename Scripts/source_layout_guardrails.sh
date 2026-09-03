@@ -1074,6 +1074,7 @@ allowed_tracked_docs=(
   "docs/architecture/adr-0009-data-plane-schema-and-protocol-authority.md"
   "docs/architecture/adr-0010-vcs-backend-cli-subprocess-canonical.md"
   "docs/architecture/adr-0011-agent-session-host.md"
+  "docs/architecture/adr-0012-workspace-mutation-authority-persistence.md"
   "docs/architecture/agentry-rewrite-charter.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"
