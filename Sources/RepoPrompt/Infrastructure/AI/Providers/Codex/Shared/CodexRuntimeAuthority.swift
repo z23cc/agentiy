@@ -7,7 +7,7 @@ import RepoPromptShared
 /// only user-configurable external fallback is an absolute path supplied through
 /// `AGENTRY_CODEX_EXECUTABLE`; ordinary PATH lookup is intentionally not consulted.
 enum CodexRuntimeAuthority {
-    static let bundledVersion = Version(major: 0, minor: 151, patch: 0)
+    static let bundledVersion = Version(major: 0, minor: 153, patch: 2)
     static let minimumExternalVersion = bundledVersion
     static let externalExecutableOverrideEnvironmentKey = "AGENTRY_CODEX_EXECUTABLE"
 

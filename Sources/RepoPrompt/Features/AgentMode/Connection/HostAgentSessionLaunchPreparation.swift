@@ -7,7 +7,7 @@ import RepoPromptDomainRuntime
 /// Envelope is the portable secret path for debug and release. This type does not call
 /// Security.framework. Secrets come from an injected provider or the process environment.
 enum HostAgentSessionLaunchPreparation {
-    struct Context: Sendable {
+    struct Context {
         var applicationSupportRoot: URL
         /// When `true`, a resolved secret is written as a 0600 envelope and `envelopeID` is put on the wire.
         var putsEnvelopeIDOnWire: Bool

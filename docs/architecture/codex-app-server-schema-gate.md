@@ -21,9 +21,9 @@ consumes at its current integration boundary.
 
 ## Version contract
 
-- The contract floor is **Codex CLI 0.151.0**.
-- Local validation accepts 0.151.0 or newer so a developer can detect drift before CI moves.
-- CI installs exactly `@openai/codex@0.151.0`, making the required check deterministic.
+- The contract floor is **Codex CLI 0.153.2**.
+- Local validation accepts 0.153.2 or newer so a developer can detect drift before CI moves.
+- CI installs exactly `@openai/codex@0.153.2`, making the required check deterministic.
 - The gate fails before generation when the installed CLI is older than the floor.
 
 When advancing Codex, install the intended version, run the gate, reconcile Agentry with the generated
@@ -60,7 +60,7 @@ hook-key → `{trusted_hash}` object shape cannot be expressed by the current ch
 After a trust write, the post-write `hooks/list` result is the semantic success authority;
 `config/batchWrite.status` alone is not.
 
-The hardened 0.151.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
+The hardened 0.153.2 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
@@ -80,9 +80,9 @@ differences:
 5. **Corrected after upstream protocol review:** Fresh `thread/start` config initializes memory
    eligibility, but resume config does not reconcile an existing stored thread's persisted mode. Agentry
    therefore calls experimental `thread/memoryMode/set` with `enabled` or `disabled` before
-   `thread/resume` so resumed startup observes the requested mode. It does not issue a redundant
-   post-start request. The 0.151.0 runtime floor and `experimentalApi` initialization capability make
-   resume reconciliation a required contract rather than an optional compatibility fallback.
+   `thread/resume` so resumed startup observes the requested mode. The 0.153.2
+   runtime floor and `experimentalApi` initialization capability make resume reconciliation a required
+   contract rather than an optional compatibility fallback.
 6. The generated `goal.status` enum includes `blocked` and `usageLimited`, while Agentry previously
    rejected both as invalid responses. The same six-value enum is also declared for
    `thread/goal/set`, so accepting those cases does not create an outbound schema violation.
@@ -98,6 +98,21 @@ None removes or changes a field Agentry sends or consumes. The exact tagged sour
 confirmed that existing thread memory eligibility must be reconciled through experimental
 `thread/memoryMode/set`; resume config keys alone are insufficient for stored threads, while fresh
 thread eligibility is initialized by `thread/start` config.
+
+## 0.153.2 rotation findings (2026-09-04)
+
+The repository candidate flow (`Scripts/codex_update_candidate.py --latest-stable`) verified
+official `rust-v0.153.2` artifacts against the known-good 0.151.0 baseline: package path/kind/
+executable layout, Mach-O inventory, thin per-target architecture policy, pinned OpenAI signing
+identities (`TeamIdentifier: 2DC432GLL2`), hardened runtime, and trusted timestamps all matched.
+Archive SHA-256:
+`287e2dd0a9bbfb58581b0a9150399458b4f094ea42caf02860f1e8cb5a202a0b` (aarch64) and
+`6e3876e7f4edff2e3dee545e1d3b2334866791a8dfce7e25789bf6799355a4ea` (x86_64).
+
+The bounded projection is unchanged in size at 45 methods, 193 parameter paths, and 93 response
+paths. All schema checks and guardrails pass without changes to the contract methods.
+`CodexRuntimeAuthority.minimumExternalVersion` continues to track `bundledVersion`, so external
+overrides older than 0.153.2 are refused.
 
 ## 0.151.0 rotation findings (2026-09-01)
 

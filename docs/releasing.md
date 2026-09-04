@@ -40,11 +40,11 @@ the closed app's version history.
 
 ## Bundled Codex artifact
 
-Debug and release packaging include the complete official OpenAI Codex 0.151.0
+Debug and release packaging include the complete official OpenAI Codex 0.153.2
 standalone package. The authority is the repository-owned
 [`Vendor/Codex/manifest.json`](../Vendor/Codex/manifest.json), which pins the
-official [`rust-v0.151.0` release](https://github.com/openai/codex/releases/tag/rust-v0.151.0),
-the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.151.0/codex-package_SHA256SUMS),
+official [`rust-v0.153.2` release](https://github.com/openai/codex/releases/tag/rust-v0.153.2),
+the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.153.2/codex-package_SHA256SUMS),
 the arm64 macOS package asset, its complete extracted layout, file hashes,
 architecture, and primary executable signing identities. The upstream release
 publishes SHA-256 sums but does not document a public GPG, minisign, or SLSA
@@ -89,7 +89,7 @@ rejects this policy, stop rather than silently re-signing the upstream payload.
 The bundled package is Agentry's default Codex runtime authority; runtime
 selection never falls through to the user's shell `PATH`. Advanced users may set
 one explicit absolute external override with `AGENTRY_CODEX_EXECUTABLE`.
-Agentry rejects overrides older than 0.151.0, matching the bundled runtime and
+Agentry rejects overrides older than 0.153.2, matching the bundled runtime and
 the documented app-server contract floor. Bundled and external runtimes both use
 Agentry-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under
 `~/Library/Application Support/Agentry/Codex/{Debug,Release}/`, leaving
@@ -115,7 +115,7 @@ To diagnose acquisition independently of a build, run:
 python3 Scripts/codex_runtime_artifact.py acquire --arch arm64
 python3 Scripts/codex_runtime_artifact.py verify \
   --arch aarch64-apple-darwin \
-  --package .build/codex-runtime/0.151.0/aarch64-apple-darwin
+  --package .build/codex-runtime/0.153.2/aarch64-apple-darwin
 python3 Scripts/codex_runtime_artifact.py stage-bundle \
   --arch arm64 \
   --cache-root .build/codex-runtime \
@@ -160,12 +160,12 @@ inventory/architecture, normalized-payload, and OpenAI signing-identity drift.
 The official output directory contains a proposed `candidate-manifest.json`,
 `candidate-provenance.json`, sanitized `release-metadata.json`, the upstream
 checksum file, self-checksums, and a deterministic `candidate-report.md`. The live
-0.151.0 pin remains authoritative
+0.153.2 pin remains authoritative
 until a maintainer reviews and deliberately applies a complete rotation change.
 
-The known-good rollback for the 0.151.0 rotation is verified Codex 0.147.0
-(`rust-v0.147.0`; arm64 package archive SHA-256
-`17b2984eb22b607e3d0c25728252fc90f510e476bad39a6d9f45cdb1aa685432`).
+The known-good rollback for the 0.153.2 rotation is verified Codex 0.151.0
+(`rust-v0.151.0`; arm64 package archive SHA-256
+`cb6e78eba80c1bc310a533f6f1c6c948377733bc06f9e837949334e04abde9c6`).
 After a reviewed rotation, roll back by reverting the complete rotation change and
 rebuilding from the restored manifest rather than mixing old and new authority files.
 
