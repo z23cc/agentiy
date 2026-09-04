@@ -169,12 +169,7 @@ WAIT_POLL_SECONDS = 1.0
 TERMINATE_GRACE_SECONDS = 3.0
 KILL_GRACE_SECONDS = 2.0
 PROCESS_TREE_POLL_SECONDS = 0.05
-XCTEST_WAKE_PROBE_PAUSE_SECONDS = 0.25
-XCTEST_WAKE_PROGRESS_WAIT_SECONDS = 10.0
-XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES = 64
-XCTEST_STALL_SAMPLE_MAX_BYTES = 128 * 1024
-XCTEST_STALL_FAILURE_EXIT_CODE = 70
-XCTEST_WATCHDOG_JOIN_SECONDS = 25.0
+PROCESS_SNAPSHOT_MAX_PIDS = 64
 OPERATION_STREAM_JOIN_SECONDS = 10.0
 OPERATION_PTY_READ_BYTES = 65536
 FORCE_STOP_RPC_TIMEOUT_SECONDS = 30.0
@@ -320,8 +315,8 @@ Operation commands:
   ./conductor swift-build --product Agentry|agentry-mcp|all
   ./conductor build
   ./conductor package debug|release
-  ./conductor test [--filter <filter>] [--test-product <product>] [--configuration debug|release] [--sanitize none|thread] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
-  ./conductor provider-test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor test [--filter <filter>]
+  ./conductor provider-test [--filter <filter>]
   ./conductor install-debug-cli
   ./conductor debug-cli-status
   ./conductor run [-- <app args...>]                  # build/package, then FIFO coordinated launch
@@ -380,26 +375,6 @@ class DaemonContactError(ConductorError):
     def __init__(self, message: str, health_payload: Dict[str, Any]) -> None:
         super().__init__(message)
         self.health_payload = health_payload
-
-
-XCTEST_PROGRESS_RE = re.compile(
-    r"^Test Case '(.+)' (started|passed|failed|skipped)(?: \([^)]*\))?\.\s*$"
-)
-XCTEST_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9:;]*m")
-
-
-@dataclasses.dataclass(frozen=True)
-class XCTestStallClaim:
-    progress_transport: str
-    progress_sequence: int
-    last_progress_test: Optional[str]
-    last_progress_action: Optional[str]
-    last_progress_observed_at: Optional[float]
-    threshold_seconds: float
-    current_test: Optional[str]
-    previous_test: Optional[str]
-    wake_probe: bool
-    triggered_at: float
 
 
 @dataclasses.dataclass
@@ -708,16 +683,6 @@ class ProcessOutputPump:
         channel.result = result
         channel.registered.set()
         channel.completion.set()
-
-
-def is_xctest_process_command(command: str) -> bool:
-    normalized = command.strip()
-    executable = normalized.split(None, 1)[0] if normalized else ""
-    return (
-        ".xctest/" in executable
-        or executable.endswith(".xctest")
-        or Path(executable).name == "xctest"
-    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2410,7 +2375,7 @@ def process_table_snapshot() -> Optional[Dict[int, Tuple[int, str]]]:
 
 
 def process_command_snapshot(pids: Sequence[int]) -> Dict[int, str]:
-    selected = sorted({pid for pid in pids if pid > 0})[:XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES]
+    selected = sorted({pid for pid in pids if pid > 0})[:PROCESS_SNAPSHOT_MAX_PIDS]
     if not selected:
         return {}
     try:
@@ -3074,15 +3039,6 @@ class Job:
     timed_out: bool = False
     measurement_invalid: bool = False
     progress_transport: Optional[str] = None
-    xctest_progress_sequence: int = 0
-    xctest_progress_deadline: Optional[float] = None
-    xctest_current_test: Optional[str] = None
-    xctest_previous_test: Optional[str] = None
-    xctest_last_progress_test: Optional[str] = None
-    xctest_last_progress_action: Optional[str] = None
-    xctest_last_progress_observed_at: Optional[float] = None
-    xctest_watchdog_triggered: bool = False
-    xctest_process_finished: bool = False
     diagnostics: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     diagnostic_paths: List[Path] = dataclasses.field(default_factory=list, repr=False)
     output_summary: Optional[Dict[str, Any]] = None
@@ -3173,10 +3129,6 @@ class Job:
             "timedOut": self.timed_out,
             "measurementInvalid": self.measurement_invalid,
             "progressTransport": self.progress_transport,
-            "progressSequence": self.xctest_progress_sequence,
-            "lastProgressTest": self.xctest_last_progress_test,
-            "lastProgressAction": self.xctest_last_progress_action,
-            "lastProgressObservedAt": self.xctest_last_progress_observed_at,
             "diagnosticPaths": [str(path) for path in self.diagnostic_paths],
             "buildCache": dict(self.build_cache),
         }
@@ -3598,21 +3550,6 @@ class OperationRegistry:
 
         raise ConductorError(f"invalid arguments for operation '{operation}'")
 
-    @staticmethod
-    def _validate_xctest_stall_options(args: Dict[str, Any]) -> None:
-        raw_seconds = args.get("xctestStallSeconds")
-        wake_probe = bool(args.get("xctestStallWakeProbe"))
-        if raw_seconds is None:
-            if wake_probe:
-                raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
-            return
-        try:
-            seconds = float(raw_seconds)
-        except (TypeError, ValueError):
-            raise ConductorError("--xctest-stall-seconds must be a positive number")
-        if not math.isfinite(seconds) or seconds <= 0:
-            raise ConductorError("--xctest-stall-seconds must be greater than zero")
-
     def _prepare_sleep(self, operation: Any, args: Dict[str, Any], timeout: Optional[Any], request: Dict[str, Any]) -> Tuple[List[str], List[str], Path, Dict[str, str], Optional[float]]:
         try:
             seconds = float(args.get("seconds"))
@@ -3659,15 +3596,6 @@ class OperationRegistry:
         controlled["CARGO_BUILD_TARGET"] = CARGO_TARGET
         controlled["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
         controlled["CARGO_INCREMENTAL"] = "0"
-        return controlled
-
-    def _ensure_test_application_support_root(self, env: Dict[str, str]) -> Dict[str, str]:
-        key = "AGENTRY_APPLICATION_SUPPORT_ROOT"
-        current = str(env.get(key, "")).strip()
-        if current:
-            return env
-        controlled = dict(env)
-        controlled[key] = tempfile.mkdtemp(prefix="agentry-test-support.")
         return controlled
 
     def _rust_archive_then_command(
@@ -4540,7 +4468,6 @@ class DaemonState:
         process: Optional[subprocess.Popen[bytes]] = None
         output_transport: Optional[ProcessOutputTransport] = None
         output_channel: Optional[ProcessOutputChannel] = None
-        watchdog: Optional[threading.Thread] = None
         global_heavy_slot: Optional[Any] = None
         cache_manager: Optional[BuildCacheManager] = None
         cache_context: Optional[BuildCacheContext] = None
@@ -4614,7 +4541,7 @@ class DaemonState:
             start_line = f"$ {format_argv(argv)}\n"
             with self.condition:
                 self._append_system_line_locked(job, start_line)
-            output_transport = self._create_process_output_transport(job)
+            output_transport = ProcessOutputTransport.create("pipe")
             with self.condition:
                 job.progress_transport = output_transport.kind
             process_pass_fds: Tuple[int, ...] = ()
@@ -4671,13 +4598,6 @@ class DaemonState:
                     if current is job:
                         self._request_process_cleanup_locked(job, "cancellation requested before PID assignment")
 
-            if self._xctest_watchdog_enabled(job):
-                watchdog = threading.Thread(
-                    target=self._monitor_xctest_stall,
-                    args=(job.ticket,),
-                    daemon=True,
-                )
-                watchdog.start()
             try:
                 exit_code = process.wait(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
@@ -4768,15 +4688,7 @@ class DaemonState:
                         job,
                         f"process output truncated during bounded finalization: {output_result.reason}\n",
                     )
-                job.xctest_process_finished = True
                 self.condition.notify_all()
-            if watchdog is not None:
-                watchdog.join(timeout=XCTEST_WATCHDOG_JOIN_SECONDS)
-                if watchdog.is_alive():
-                    with self.condition:
-                        job.measurement_invalid = True
-                        job.error = "XCTest progress stall watchdog did not finish bounded diagnostics"
-                        self._append_system_line_locked(job, job.error + "\n")
             with self.condition:
                 self._finalize_process_exit_locked(job, exit_code)
                 cache_publish_after_success = bool(
@@ -4901,7 +4813,6 @@ class DaemonState:
             job = self.jobs.get(ticket)
             if job:
                 self._append_tail_locked(job, text)
-                self._record_xctest_progress_locked(job, text)
                 self.condition.notify_all()
 
     @staticmethod
@@ -4928,8 +4839,8 @@ class DaemonState:
             job.result_summary = "canceled"
         elif job.measurement_invalid:
             job.state = "failed"
-            job.exit_code = XCTEST_STALL_FAILURE_EXIT_CODE
-            job.error = job.error or "XCTest progress stall watchdog invalidated this measurement"
+            job.exit_code = 70
+            job.error = job.error or "measurement invalidated"
             job.result_summary = job.error
         elif job.timed_out:
             job.state = "failed"
@@ -4944,310 +4855,6 @@ class DaemonState:
             job.exit_code = int(exit_code)
             job.error = f"process exited with status {exit_code}"
             job.result_summary = job.error
-
-    def _xctest_watchdog_enabled(self, job: Job) -> bool:
-        return (
-            job.operation in {"test", "provider-test"}
-            and job.args.get("xctestStallSeconds") is not None
-        )
-
-    def _create_process_output_transport(self, job: Job) -> ProcessOutputTransport:
-        kind = "pty" if self._xctest_watchdog_enabled(job) else "pipe"
-        return ProcessOutputTransport.create(kind)
-
-    def _record_xctest_progress_locked(
-        self,
-        job: Job,
-        text: str,
-        observed_at: Optional[float] = None,
-    ) -> bool:
-        if not self._xctest_watchdog_enabled(job):
-            return False
-        matched = False
-        timestamp = time.monotonic() if observed_at is None else observed_at
-        progress_observed_at = now() if observed_at is None else observed_at
-        threshold = float(job.args["xctestStallSeconds"])
-        for raw_line in text.splitlines():
-            matchable_line = XCTEST_ANSI_SGR_RE.sub("", raw_line.rstrip("\r\n")).strip()
-            marker = XCTEST_PROGRESS_RE.match(matchable_line)
-            if marker is None:
-                continue
-            test_name, action = marker.groups()
-            if action != "started" and job.xctest_progress_deadline is None:
-                continue
-            matched = True
-            job.xctest_progress_sequence += 1
-            job.xctest_progress_deadline = timestamp + threshold
-            job.xctest_last_progress_test = test_name
-            job.xctest_last_progress_action = action
-            job.xctest_last_progress_observed_at = progress_observed_at
-            if action == "started":
-                if job.xctest_current_test and job.xctest_current_test != test_name:
-                    job.xctest_previous_test = job.xctest_current_test
-                job.xctest_current_test = test_name
-            else:
-                job.xctest_previous_test = test_name
-                if job.xctest_current_test == test_name:
-                    job.xctest_current_test = None
-        return matched
-
-    def _claim_xctest_stall_locked(
-        self,
-        job: Job,
-        observed_at: Optional[float] = None,
-    ) -> Optional[XCTestStallClaim]:
-        if not self._xctest_watchdog_enabled(job) or job.xctest_watchdog_triggered:
-            return None
-        timestamp = time.monotonic() if observed_at is None else observed_at
-        deadline = job.xctest_progress_deadline
-        if deadline is None or timestamp < deadline:
-            return None
-        job.xctest_watchdog_triggered = True
-        job.measurement_invalid = True
-        job.error = "XCTest progress stall watchdog invalidated this measurement"
-        return XCTestStallClaim(
-            progress_transport=job.progress_transport or "pty",
-            progress_sequence=job.xctest_progress_sequence,
-            last_progress_test=job.xctest_last_progress_test,
-            last_progress_action=job.xctest_last_progress_action,
-            last_progress_observed_at=job.xctest_last_progress_observed_at,
-            threshold_seconds=float(job.args["xctestStallSeconds"]),
-            current_test=job.xctest_current_test,
-            previous_test=job.xctest_previous_test,
-            wake_probe=bool(job.args.get("xctestStallWakeProbe")),
-            triggered_at=timestamp,
-        )
-
-    def _monitor_xctest_stall(self, ticket: str) -> None:
-        while True:
-            with self.condition:
-                job = self.jobs.get(ticket)
-                if (
-                    job is None
-                    or job.state != "running"
-                    or job.xctest_watchdog_triggered
-                    or job.xctest_process_finished
-                ):
-                    return
-                deadline = job.xctest_progress_deadline
-                if deadline is None:
-                    self.condition.wait()
-                    continue
-                remaining = deadline - time.monotonic()
-                if remaining > 0:
-                    self.condition.wait(timeout=remaining)
-                    continue
-                claim = self._claim_xctest_stall_locked(job)
-                if claim is None:
-                    continue
-            self._handle_xctest_stall(ticket, claim)
-            return
-
-    def _xctest_process_snapshot_locked(
-        self,
-        job: Job,
-    ) -> Tuple[Optional[Tuple[int, str]], List[Dict[str, Any]]]:
-        verified, depths, conclusive = self._refresh_process_tree_locked(job)
-        if not conclusive:
-            return None, []
-        lease = self._process_lease(job)
-        commands = self._external_call_while_locked(process_command_snapshot, list(verified.keys()))
-        if self._job_matches_process_lease_locked(lease) is None:
-            return None, []
-        entries: List[Dict[str, Any]] = []
-        matches: List[Tuple[int, int, str]] = []
-        for pid in sorted(verified, key=lambda candidate: (depths.get(candidate, 0), candidate)):
-            ppid, start_token = verified[pid]
-            command = commands.get(pid, "")
-            entry = {
-                "pid": pid,
-                "ppid": ppid,
-                "depth": depths.get(pid, 0),
-                "startToken": start_token,
-                "command": command[:500],
-            }
-            if len(entries) < XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES:
-                entries.append(entry)
-            if is_xctest_process_command(command):
-                matches.append((depths.get(pid, 0), pid, start_token))
-        if not matches:
-            return None, entries
-        _depth, pid, start_token = max(matches)
-        return (pid, start_token), entries
-
-    def _signal_process_identity(self, pid: int, start_token: str, sig: signal.Signals) -> bool:
-        snapshot = process_table_snapshot()
-        confirmation = snapshot.get(pid) if snapshot is not None else None
-        if confirmation is None or confirmation[1] != start_token:
-            return False
-        try:
-            os.kill(pid, sig)
-            return True
-        except (ProcessLookupError, PermissionError, OSError):
-            return False
-
-    @staticmethod
-    def _bound_diagnostic_file(path: Path, max_bytes: int = XCTEST_STALL_SAMPLE_MAX_BYTES) -> None:
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return
-        if len(data) <= max_bytes:
-            return
-        marker = b"\n... conductor truncated bounded XCTest stall diagnostic ...\n"
-        payload_bytes = max(0, max_bytes - len(marker))
-        head_bytes = payload_bytes // 2
-        tail_bytes = payload_bytes - head_bytes
-        path.write_bytes(data[:head_bytes] + marker + data[-tail_bytes:])
-
-    def _capture_xctest_stall_diagnostics(
-        self,
-        job: Job,
-        diagnostic: Dict[str, Any],
-        xctest_identity: Optional[Tuple[int, str]],
-    ) -> Dict[str, Any]:
-        snapshot_path = self.paths.jobs_dir / f"{job.ticket}.xctest-stall.json"
-        diagnostic["processSnapshotPath"] = str(snapshot_path)
-        try:
-            snapshot_path.write_text(json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8")
-            self._bound_diagnostic_file(snapshot_path)
-            job.diagnostic_paths.append(snapshot_path)
-        except OSError as exc:
-            diagnostic["processSnapshotError"] = str(exc)
-
-        if xctest_identity is None:
-            return diagnostic
-        pid, _start_token = xctest_identity
-        sample_path = self.paths.jobs_dir / f"{job.ticket}.xctest-stall.sample.txt"
-        diagnostic["samplePath"] = str(sample_path)
-        try:
-            completed = subprocess.run(
-                ["/usr/bin/sample", str(pid), "1", "10", "-file", str(sample_path)],
-                text=True,
-                capture_output=True,
-                timeout=3.0,
-            )
-            diagnostic["sampleExitCode"] = completed.returncode
-            if completed.stderr:
-                diagnostic["sampleStderr"] = completed.stderr[-1000:]
-            if sample_path.exists():
-                self._bound_diagnostic_file(sample_path)
-                job.diagnostic_paths.append(sample_path)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            diagnostic["sampleError"] = str(exc)
-        return diagnostic
-
-    def _wait_for_xctest_progress_after_probe(
-        self,
-        job: Job,
-        progress_sequence: int,
-        timeout: float = XCTEST_WAKE_PROGRESS_WAIT_SECONDS,
-    ) -> bool:
-        deadline = time.monotonic() + min(timeout, XCTEST_WAKE_PROGRESS_WAIT_SECONDS)
-        with self.condition:
-            while job.state == "running" and job.xctest_progress_sequence <= progress_sequence:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                self.condition.wait(timeout=remaining)
-            return job.xctest_progress_sequence > progress_sequence
-
-    def _terminate_xctest_stalled_job(self, job: Job) -> None:
-        with self.condition:
-            if job.state != "running":
-                return
-            self._terminate_process_group_locked(job, reason="XCTest progress stall measurement invalid")
-            descendants_alive = self._wait_for_process_tree_exit_locked(
-                job,
-                now() + TERMINATE_GRACE_SECONDS,
-                signal_for_new=signal.SIGTERM,
-            )
-            if descendants_alive:
-                self._kill_process_group_locked(
-                    job,
-                    reason="XCTest progress stall cleanup; SIGKILL after grace period",
-                )
-                descendants_alive = self._wait_for_process_tree_exit_locked(
-                    job,
-                    now() + KILL_GRACE_SECONDS,
-                    signal_for_new=signal.SIGKILL,
-                )
-            if descendants_alive:
-                self._append_system_line_locked(
-                    job,
-                    "XCTest stall watchdog cleanup could not confirm descendant exit after SIGKILL\n",
-                )
-            self.condition.notify_all()
-
-    def _handle_xctest_stall(self, ticket: str, claim: XCTestStallClaim) -> None:
-        with self.condition:
-            job = self.jobs.get(ticket)
-            if job is None:
-                return
-            xctest_identity, process_tree = self._xctest_process_snapshot_locked(job)
-            diagnostic: Dict[str, Any] = {
-                "kind": "xctest-progress-stall",
-                "capturedAt": now(),
-                "thresholdSeconds": claim.threshold_seconds,
-                "progressTransport": claim.progress_transport,
-                "progressSequence": claim.progress_sequence,
-                "lastProgressTest": claim.last_progress_test,
-                "lastProgressAction": claim.last_progress_action,
-                "lastProgressObservedAt": claim.last_progress_observed_at,
-                "currentTest": claim.current_test,
-                "previousTest": claim.previous_test,
-                "wakeProbeRequested": claim.wake_probe,
-                "processTree": process_tree,
-            }
-            if xctest_identity is not None:
-                diagnostic["xctestPID"] = xctest_identity[0]
-                diagnostic["xctestStartToken"] = xctest_identity[1]
-            current = claim.current_test or "<between XCTest cases>"
-            previous = claim.previous_test or "<none>"
-            self._append_system_line_locked(
-                job,
-                f"XCTest progress stall watchdog triggered after {claim.threshold_seconds:.3f}s; "
-                f"current={current}; previous={previous}\n",
-            )
-            self._append_system_line_locked(job, "XCTest descendant process tree:\n")
-            for entry in process_tree:
-                self._append_system_line_locked(
-                    job,
-                    "  pid={pid} ppid={ppid} depth={depth} start={startToken} command={command}\n".format(**entry),
-                )
-
-        diagnostic = self._capture_xctest_stall_diagnostics(job, diagnostic, xctest_identity)
-        resumed = False
-        stop_sent = False
-        continue_sent = False
-        if claim.wake_probe and xctest_identity is not None:
-            pid, start_token = xctest_identity
-            stop_sent = self._signal_process_identity(pid, start_token, signal.SIGSTOP)
-            if stop_sent:
-                time.sleep(XCTEST_WAKE_PROBE_PAUSE_SECONDS)
-                continue_sent = self._signal_process_identity(pid, start_token, signal.SIGCONT)
-                if continue_sent:
-                    resumed = self._wait_for_xctest_progress_after_probe(job, claim.progress_sequence)
-        diagnostic["stopSent"] = stop_sent
-        diagnostic["continueSent"] = continue_sent
-        diagnostic["progressResumed"] = resumed
-        snapshot_path_value = diagnostic.get("processSnapshotPath")
-        if isinstance(snapshot_path_value, str):
-            try:
-                snapshot_path = Path(snapshot_path_value)
-                snapshot_path.write_text(json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8")
-                self._bound_diagnostic_file(snapshot_path)
-            except OSError as exc:
-                diagnostic["processSnapshotFinalWriteError"] = str(exc)
-        with self.condition:
-            job.diagnostics.append(diagnostic)
-            self._append_system_line_locked(
-                job,
-                "XCTest stall wake probe result: "
-                f"stopSent={stop_sent} continueSent={continue_sent} progressResumed={resumed}; "
-                "measurement remains invalid\n",
-            )
-        self._terminate_xctest_stalled_job(job)
 
     def _refresh_output_summary(self, job: Job) -> None:
         coalesced_deadline = time.monotonic() + LOG_FLUSH_WAIT_SECONDS
@@ -5819,11 +5426,6 @@ class DaemonState:
         with contextlib.suppress(FileNotFoundError):
             candidates.extend(
                 path for path in self.paths.jobs_dir.glob("*.log") if path.name not in retained_logs
-            )
-            candidates.extend(
-                path
-                for path in self.paths.jobs_dir.glob("*.xctest-stall.*")
-                if path.name not in retained_diagnostics
             )
         for path in candidates:
             try:
@@ -7358,13 +6960,7 @@ def run_operation_command(
 ) -> Tuple[int, str, str]:
     """Run a child command, streaming its output live while still returning it.
 
-    Output is streamed rather than captured-then-printed because the daemon's XCTest stall
-    watchdog arms itself from `Test Case ... started` markers it observes in job output. Under
-    the previous `subprocess.run(..., capture_output=True)` nothing reached the daemon until the
-    child exited, so a child that never exits produced no markers, the watchdog never armed, and
-    `--xctest-stall-seconds` was inert: a hung `swift test` burned the full job timeout and
-    reported nothing. The case that most needs diagnostics was the one guaranteed not to produce
-    any.
+    Output is streamed rather than captured-then-printed so hung children still surface logs.
 
     stdout and stderr are pumped by separate threads because reading them sequentially deadlocks
     once either pipe buffer fills. Lines interleave as they are produced, which no caller parses:
@@ -8860,31 +8456,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
     elif operation in {"test", "provider-test"}:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
         parser.add_argument("--filter")
-        parser.add_argument("--test-product")
-        if operation == "test":
-            parser.add_argument("--configuration", choices=["debug", "release"])
-            parser.add_argument("--sanitize", choices=["none", "thread"])
-        parser.add_argument("--xctest-stall-seconds", type=float)
-        parser.add_argument("--xctest-stall-wake-probe", action="store_true")
         ns = parser.parse_args(rest)
-        if ns.xctest_stall_seconds is not None and (
-            not math.isfinite(ns.xctest_stall_seconds) or ns.xctest_stall_seconds <= 0
-        ):
-            raise ConductorError("--xctest-stall-seconds must be greater than zero")
-        if ns.xctest_stall_wake_probe and ns.xctest_stall_seconds is None:
-            raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
-        if getattr(ns, "configuration", None):
-            args["configuration"] = ns.configuration
-        if getattr(ns, "sanitize", None):
-            args["sanitize"] = ns.sanitize
         if ns.filter:
             args["filter"] = ns.filter
-        if ns.test_product:
-            args["testProduct"] = ns.test_product
-        if ns.xctest_stall_seconds is not None:
-            args["xctestStallSeconds"] = ns.xctest_stall_seconds
-        if ns.xctest_stall_wake_probe:
-            args["xctestStallWakeProbe"] = True
     elif operation == "run":
         app_args = rest[1:] if rest and rest[0] == "--" else rest
         args["appArgs"] = app_args

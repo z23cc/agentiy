@@ -223,7 +223,7 @@ See `docs/architecture/source-layout.md` for the full ownership map and document
 - Reusable UI, diffing, regex, networking, process, security, and utility substrate should use the narrowest `Sources/RepoPrompt/Infrastructure/<Area>` owner.
 - App-integrated diagnostics belong under `Sources/RepoPrompt/Features/Diagnostics` and need a documented entry point/purpose.
 - App/CLI protocol code shared by both products belongs under `Sources/RepoPromptShared`.
-- Test doubles, fixtures, parser inputs, sample projects, and XCTest-only helpers belong under `Tests/RepoPromptTests`, not `Sources/RepoPrompt`.
+- Test doubles and fixtures belong with the Rust crate they cover, or under `Scripts/` for tooling tests — not under `Sources/RepoPrompt`.
 - Do not recreate legacy top-level `Views`, `ViewModels`, `Services`, `Models`, `Utils`, or `Shared` buckets.
 - Do not put directories named `Tests`, `TestSupport`, or `Fixtures` under `Sources/RepoPrompt`.
 - Keep `MCPControlMessages.swift` single-sourced in `Sources/RepoPromptShared/MCP`.

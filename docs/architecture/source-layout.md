@@ -57,15 +57,12 @@ Sources/
   RepoPromptShared/
     MCP/                         # shared app/CLI MCP control protocol definitions
   RepoPromptMCP/                 # MCP CLI implementation
-Tests/
-  RepoPromptCodeMapCoreTests/    # sole owner of pure CodeMap fixtures, goldens, and deterministic core tests
-  RepoPromptSearchCoreTests/     # direct Rust-search differential and path-filtering tests
-  RepoPromptWorkspaceCoreTests/  # direct deterministic tests owned by RepoPromptWorkspaceCore
-  RepoPromptDomainRuntimeTests/  # direct owner tests for the headless MCP runtime and workspace/context authority
-  RepoPromptTests/               # app integration, persistence, workspace, presentation, UI, and MCP tests
+rust/crates/*/src                # default `make dev-test` coverage (`cargo test --lib`)
+rust/crates/*/tests              # integration/process/proptest; `CARGO_TEST_KIND=full`
+Scripts/test_*.py                # tooling contracts
 ```
 
-The external products and emitted binaries are `Agentry` and `agentry-mcp`. The internal `RepoPrompt` executable target remains a one-file entry shell delegating to `RepoPromptApp`; internal module and target names are intentionally unchanged. `RepoPromptApp` is not declared as a library product or separate Xcode convenience scheme. `RepoPromptCodeMapCore`, `RepoPromptSearchCore`, `RepoPromptWorkspaceCore`, and `RepoPromptDomainRuntime` are internal dependencies of `RepoPromptApp`, are not exposed as package products, and have direct owning test targets. `RepoPromptDomainRuntime` owns the AppKit-free, Sendable MCP runtime identity/lifecycle values, the canonical 27-tool name/capability/admission/client-policy catalog, immutable definitions and fingerprints, and the actor registry. App registration is process composition over that registry; no app-local registry facade or second schema authority remains. `RepoPromptCodeMapCoreTests` is the sole resource owner for pure CodeMap parser fixtures and goldens. Root app tests import `RepoPromptApp`; the separate `RepoPromptMCP` executable dependency remains unchanged.
+The external products and emitted binaries are `Agentry` and `agentry-mcp`. The internal `RepoPrompt` executable target remains a one-file entry shell delegating to `RepoPromptApp`; internal module and target names are intentionally unchanged. `RepoPromptApp` is not declared as a library product or separate Xcode convenience scheme. `RepoPromptCodeMapCore`, `RepoPromptSearchCore`, `RepoPromptWorkspaceCore`, and `RepoPromptDomainRuntime` are internal dependencies of `RepoPromptApp` and are not exposed as package products. Swift XCTest trees were removed; executable coverage is Rust plus Scripts tooling tests.
 
 ## Rust core and FFI ownership
 
@@ -136,7 +133,7 @@ The old IDE-era Prompt selected-files panel is also removed. Do not add back `Pr
 - New app-local MCP/socket/routing helpers go under `Sources/RepoPrompt/Infrastructure/MCP`, not `Sources/RepoPrompt/Shared`. App tool providers receive only the typed physical capability families they require; `MCPAppPhysicalCapabilityAdapters` is a namespace, not an umbrella dependency bag or dynamic-member façade.
 - Reusable AppKit-free physical workspace operations used by direct MCP belong in `RepoPromptDomainRuntime`; `RepoPromptMCP` may adapt them but must not copy read/search/tree/selection implementations. App presentation adapters may add UI-specific policy without becoming domain identity authority. Durable compose-tab selection and context mutations cross the typed Domain command boundary (`replaceSelection` / `replaceContext`) before any stored-tab mirror is applied; path/codemap policy and UI propagation remain presentation concerns.
 - New CLI-only implementation code goes under `Sources/RepoPromptMCP`. Direct backend selection and stdio composition stay here; canonical schemas, workspace state roots, and reusable physical workspace operations do not.
-- App-owned test doubles, integration fixtures, sample projects, benchmark-only data, and XCTest-only helpers go under `Tests/RepoPromptTests`, not the app target. Pure CodeMap parser fixtures/goldens are the documented exception and belong only to `RepoPromptCodeMapCoreTests`.
+- Do not put test doubles or fixtures under `Sources/RepoPrompt`. Rust coverage lives in the crate; tooling tests live under `Scripts/`.
 - Do not create directories named `Tests`, `TestSupport`, or `Fixtures` under `Sources/RepoPrompt`.
 - Do not put parser fixtures or sample parser inputs under `Sources/RepoPrompt/Infrastructure/SyntaxParsing`; keep only production parser/query code there.
 - Keep `App/WindowState.swift` in `App` until there is a separate composition-root refactor; physical moves must preserve initialization order.

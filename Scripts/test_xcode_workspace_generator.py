@@ -274,11 +274,6 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         )
         self.assertNotIn("env", run.call_args.kwargs)
 
-    def test_rust_bridge_build_for_testing_is_arm64_non_launching(self) -> None:
-        with patch.object(generator.subprocess, "run") as run:
-            generator.validate_rust_bridge_build_for_testing(Path("/tmp/generated-xcode"))
-        run.assert_not_called()
-
     def test_check_detects_corruption(self) -> None:
         temporary, destination = self.generate_in_temporary_directory()
         self.addCleanup(temporary.cleanup)

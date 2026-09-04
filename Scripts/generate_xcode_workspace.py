@@ -1004,11 +1004,6 @@ def validate_xcodebuild_list(destination: Path) -> None:
         )
 
 
-def validate_rust_bridge_build_for_testing(destination: Path) -> None:
-    """XCTest targets were removed; Rust coverage is `conductor cargo-test`."""
-    del destination
-
-
 def destination_from_argument(value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -1040,8 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
         write_outputs(destination, outputs)
         if args.command == "build-for-testing":
             validate_xcodebuild_list(destination)
-            validate_rust_bridge_build_for_testing(destination)
-            print(f"Built Rust bridge tests for {destination / WORKSPACE_NAME}")
+            print(f"Built generated workspace for {destination / WORKSPACE_NAME}")
         else:
             print(f"Generated {destination / WORKSPACE_NAME}")
     elif args.command == "check":
