@@ -60,12 +60,10 @@ readable as what was known at ruling time.
   — is preserved by a weekly Linux `dependency-audit` job. Per-change coverage moved to local
   `preflight.sh pr-ready`. Anyone re-reading G8 as "fail-closed in CI on every change" should read it
   instead as "fail-closed locally on every change, and in CI on demand."
-- As of 2026-09-04 hosted `CI` is Linux secret-scan only (1x billing). The macOS laundry list was
-  removed rather than left as an accidental 10x `workflow_dispatch`. Weekly `cargo audit` moved to
-  `dependency-audit.yml` so a scheduled success cannot complete the `CI` workflow on `main` and wake
-  `main-beta.yml`. Default local `cargo-test` is `--lib`; `CARGO_TEST_KIND=full` restores integration
-  coverage. Hosted fuzz is optional; `check_fuzz_target_coverage` fail-closes only when CI runs a
-  partial target list.
+- As of 2026-09-04 hosted `CI` is Linux secret-scan only (1x billing). Weekly `cargo audit` lives in
+  `dependency-audit.yml` so it cannot complete the `CI` workflow on `main` and wake `main-beta.yml`.
+  Default local `cargo-test` is `--lib`. `preflight.sh` is whitespace, secrets, and guardrails;
+  `pr-ready` is a synonym for `push`. Lint and tests are explicit make targets.
 
 **Unchanged by this update.** The verified capability boundary and the prohibited-capability list below
 are untouched. Closing evidence gaps does not authorize UniFFI async exports, foreign callbacks,

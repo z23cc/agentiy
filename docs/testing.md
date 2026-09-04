@@ -2,7 +2,7 @@
 
 Use this guide for contributor-facing test changes. Follow `AGENTS.md` for coordinated daemon use, style checks, and lifecycle approvals. Use `$rpce-test-quality` when deciding whether coverage is worth adding, retaining, consolidating, or removing.
 
-The default executable suite is Rust unit tests (`cargo test --lib`). Swift XCTest trees were removed. Integration, process, and proptest suites stay in-tree behind `CARGO_TEST_KIND=full`. Hosted CI is a Linux secret scan; per-change gates are local `preflight.sh`.
+The default executable suite is Rust unit tests (`cargo test --lib`). Swift XCTest trees were removed. Integration, process, and proptest suites stay in-tree behind `CARGO_TEST_KIND=full`. Hosted CI is a Linux secret scan. `preflight.sh` is whitespace, secrets, and guardrails; run `make dev-test` yourself.
 
 ## Quality gate before adding a test
 
@@ -40,7 +40,7 @@ make dev-cargo-test CARGO_PACKAGE=runtime
 make dev-test CARGO_TEST_KIND=full
 ```
 
-A focused green `--lib` run is evidence for unit contracts. Use `CARGO_TEST_KIND=full` when the change touches process supervision, inventory-scope concurrency, or proto/session-log fixture tests. Hosted CI does not run cargo tests. The per-change gate is local `preflight.sh pr-ready`.
+A focused green `--lib` run is evidence for unit contracts. Use `CARGO_TEST_KIND=full` when the change touches process supervision, inventory-scope concurrency, or proto/session-log fixture tests. Hosted CI does not run cargo tests.
 
 ## Codemap-sensitive changes
 

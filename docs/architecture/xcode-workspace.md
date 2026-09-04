@@ -36,6 +36,6 @@ Generated app, MCP, and test builds are conductor-coordinated. Xcode cancellatio
 
 ## Validation ownership
 
-`Scripts/test_xcode_workspace_generator.py` protects deterministic output, the thin `RepoPrompt` → `RepoPromptApp` manifest topology, the internal `RepoPromptDomainRuntime`/owner-test topology and app/test consumer edges, bridging-header and test dependency ownership, scheme wiring, safe destinations, and stale-output detection. Local `pr-ready` runs this contract on generator-boundary paths. Full `make xcode-validate` is explicit or `workflow_dispatch`.
+`Scripts/test_xcode_workspace_generator.py` protects deterministic output, the thin `RepoPrompt` → `RepoPromptApp` manifest topology, the internal `RepoPromptDomainRuntime`/owner-test topology and app/test consumer edges, bridging-header and test dependency ownership, scheme wiring, safe destinations, and stale-output detection. Run `make xcode-generator-test` locally. Full `make xcode-validate` is explicit.
 
-Full generated-workspace validation, including official dependency acquisition and the heavier `xcodebuild -list` check in `make xcode-validate`, is explicit. Run it locally when needed, or dispatch the dedicated `Xcode Workspace Validation` workflow. Docs-only Xcode architecture changes remain guardrails-only unless that explicit validation is requested.
+Full generated-workspace validation, including official dependency acquisition and the heavier `xcodebuild -list` check in `make xcode-validate`, is explicit. Run it locally when needed.

@@ -1,17 +1,7 @@
 name: CI
 
-# Cost policy (2026-09-04): GitHub bills macOS at 10x. This workflow never uses a
-# macOS runner and never runs compile, test, lint, or fuzz jobs.
-#
-# Per-PR / dispatch: secret scan on ubuntu-latest (1x). Heavy validation is local
-# (`preflight.sh commit|push|pr-ready`, `make dev-cargo-test`, `make dev-lint`).
-#
-# Weekly `cargo audit` lives in `dependency-audit.yml`, not here. This workflow is
-# named `CI`; `main-beta.yml` publishes a beta when a successful `CI` run completes
-# on `main`. A scheduled Linux audit must not be able to satisfy that trigger.
-#
-# `push: main` stays absent for the same reason: a green no-op CI run on main would
-# publish an unvalidated beta.
+# Linux secret scan only. macOS is 10x billing; compile/test/lint stay local.
+# Do not add push: main — a green CI run on main wakes main-beta.yml.
 on:
   pull_request:
   workflow_dispatch:

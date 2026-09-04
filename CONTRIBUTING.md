@@ -46,7 +46,7 @@ For Swift or style-sensitive changes, also run:
 make dev-lint
 ```
 
-Add focused `make dev-test FILTER=<rust_test_name>` coverage for behavior changes. Use `.agents/skills/rpce-contribution-check/scripts/preflight.sh pr-ready` when you need computed-outgoing-range path-selected local PR-ready evidence.
+Add focused `make dev-test FILTER=<rust_test_name>` coverage for behavior changes.
 When changing the Xcode generator, workflow wrapper, or generated scheme
 contracts, also run:
 
