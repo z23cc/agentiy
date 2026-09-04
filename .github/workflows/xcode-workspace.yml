@@ -2,13 +2,10 @@ name: Xcode Workspace Validation
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 9 * * 1'
 
-# Cost policy (2026-09-01): the weekly schedule and manual dispatch above are the
-# entry points; the former path-filtered `push: main` trigger is covered by
-# `preflight.sh pr-ready`, which selects the xcode_workspace_validation lane locally
-# whenever those same paths change.
+# Cost policy (2026-09-04): no weekly macOS cron. Generator contract tests run
+# locally via `preflight.sh pr-ready` on Xcode-boundary path changes. Full
+# `xcode-validate` (`xcodebuild -list`) is explicit dispatch or `make xcode-validate`.
 permissions:
   contents: read
 

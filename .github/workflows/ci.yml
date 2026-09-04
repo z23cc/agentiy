@@ -1,38 +1,20 @@
 name: CI
 
-# Cost policy (2026-09-01): every macOS job here is billed at GitHub's 10x minute
-# multiplier. Heavy validation is therefore on-demand only, and the per-PR path keeps just
-# the secret scan.
+# Cost policy (2026-09-04): GitHub bills macOS at 10x. This workflow never uses a
+# macOS runner and never runs compile, test, lint, or fuzz jobs.
 #
-# There is deliberately no `schedule:` for the macOS jobs. The earlier weekly cron was
-# registered while every heavy job still failed within ~3 minutes (missing Rust archive,
-# `cargo fmt` drift), so its measured cost was meaningless. Now that those jobs run to
-# completion the true per-run cost is unknown and plausibly four figures of billable
-# minutes, which is not something to commit to a recurring trigger before measuring it.
-# Run `workflow_dispatch` once, read the actual numbers, then choose a cadence.
+# Per-PR / dispatch: secret scan on ubuntu-latest (1x). Heavy validation is local
+# (`preflight.sh commit|push|pr-ready`, `make dev-cargo-test`, `make dev-lint`).
 #
-# The one check that genuinely degrades with time rather than with changes -- a new advisory
-# filed against unchanged dependencies -- is split out into `dependency-audit` below, which
-# runs weekly on Linux at 1x billing instead of paying 10x for a macOS runner to parse
-# `Cargo.lock`.
+# Weekly `cargo audit` lives in `dependency-audit.yml`, not here. This workflow is
+# named `CI`; `main-beta.yml` publishes a beta when a successful `CI` run completes
+# on `main`. A scheduled Linux audit must not be able to satisfy that trigger.
 #
-# The replacement gate is local, not absent: `.agents/skills/rpce-contribution-check/scripts/
-# preflight.sh pr-ready` runs dev-lint, dev-test, dev-provider-test, both dev-swift-build
-# products, xcode-validate, dev-cargo-{test,codegen-check,deny,audit} and `make guardrails`,
-# path-selected against the computed outgoing range, and `preflight.sh push` already performs
-# outgoing-range secret scanning. That covers this workflow apart from fuzz and the bridge
-# debug/release/TSan matrix, which the weekly schedule below owns.
-#
-# `push: main` was removed deliberately. Leaving it while gating the heavy jobs off would let
-# `main-beta.yml` (`workflow_run: workflows: [CI], branches: [main]`) observe a *successful* CI
-# run that had validated nothing, and publish a beta from an unvalidated commit.
+# `push: main` stays absent for the same reason: a green no-op CI run on main would
+# publish an unvalidated beta.
 on:
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Consumed only by `dependency-audit` (Linux, 1x billing). Every macOS job below is
-    # gated to `workflow_dispatch` so this cron cannot pull them in.
-    - cron: '23 4 * * 1'
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
@@ -42,318 +24,11 @@ permissions:
   contents: read
 
 jobs:
-  style:
-    name: Style
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 30
-    runs-on: macos-26
-    steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Run repository guardrails
-        run: make guardrails
-
-      - name: Test Xcode workspace generator
-        run: make xcode-generator-test
-
-      - name: Install Swift style tools
-        run: ./Scripts/install_format_tools.sh install
-
-      - name: Run Swift style lint
-        run: make lint
-
-      - name: Run conductor tests
-        run: make conductor-selftest
-
-      - name: Set up Node for pinned Codex CLI
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Install pinned Codex CLI
-        run: npm install --global @openai/codex@0.153.2
-
-      - name: Validate Codex app-server schema contract
-        run: make dev-codex-schema-check
-
-      - name: Run release workflow tests
-        run: make release-selftest
-
-  build-and-test:
-    name: Build and Test (app shard ${{ matrix.shard }})
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 120
-    runs-on: macos-26
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1]
-    steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Restore SwiftPM build cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            .build
-            Packages/RepoPromptAgentProviders/.build
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-swiftpm-
-
-      - name: Build Rust FFI archive
-        # `CAgentryRustCore` links `.build/agentry-rust/current/libagentry_ffi.a` and includes
-        # `AgentryRustArchiveReady.h` from the same directory, so every Swift build of `Agentry`
-        # depends on that archive existing. Without it `shim.c` stops at its actionable
-        # "Missing Agentry Rust FFI archive" marker -- which is exactly how all four app shards
-        # and this job failed on every run before this step existed.
-        #
-        # `make dev-cargo-archive` rather than a raw `cargo build`: conductor owns staging the
-        # archive into `.build/agentry-rust/generations/<fingerprint>/` and atomically selecting
-        # it through the `current` symlink `Package.swift` resolves. It also revalidates an
-        # archive restored from the Swift-keyed cache above against the current build
-        # fingerprint and rebuilds when stale, so that cache cannot serve a mismatched archive.
-        run: make dev-cargo-archive PROFILE=debug
-
-      - name: Build app product
-        run: swift build --arch arm64 --product Agentry
-
-      - name: Build MCP product
-        run: swift build --arch arm64 --product agentry-mcp
-
-      - name: Run Rust workspace tests
-        run: make dev-cargo-test CARGO_PACKAGE=all
-
-
-  sentry-enabled-build:
-    name: Sentry-enabled Build
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 90
-    runs-on: macos-26
-    steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Restore SwiftPM build cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            .build
-            Packages/RepoPromptAgentProviders/.build
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-sentry-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-swiftpm-
-
-      - name: Build Rust FFI archive
-        # `CAgentryRustCore` links `.build/agentry-rust/current/libagentry_ffi.a` and includes
-        # `AgentryRustArchiveReady.h` from the same directory, so every Swift build of `Agentry`
-        # depends on that archive existing. Without it `shim.c` stops at its actionable
-        # "Missing Agentry Rust FFI archive" marker -- which is exactly how all four app shards
-        # and this job failed on every run before this step existed.
-        #
-        # `make dev-cargo-archive` rather than a raw `cargo build`: conductor owns staging the
-        # archive into `.build/agentry-rust/generations/<fingerprint>/` and atomically selecting
-        # it through the `current` symlink `Package.swift` resolves. It also revalidates an
-        # archive restored from the Swift-keyed cache above against the current build
-        # fingerprint and rebuilds when stale, so that cache cannot serve a mismatched archive.
-        run: make dev-cargo-archive PROFILE=debug
-
-      - name: Build app product with Sentry SDK linked
-        env:
-          AGENTRY_ENABLE_SENTRY: "1"
-        run: swift build --arch arm64 --product Agentry
-
-      - name: Test serialized Sentry privacy boundary
-        env:
-          AGENTRY_ENABLE_SENTRY: "1"
-        run: make dev-cargo-test CARGO_PACKAGE=all
-
-  rust-ffi:
-    name: Rust FFI
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 120
-    runs-on: macos-26
-    steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .build/cargo
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml', 'rust/ffi-contract/**', 'Sources/AgentryUniFFIRaw/Generated/**', 'Sources/CAgentryRustCore/include/**') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-
-
-      - name: Install pinned Rust validation tools
-        run: |
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo install cargo-fuzz --version 0.12.0 --locked
-          cargo deny --version
-          cargo audit --version
-          cargo fuzz --version
-
-      - name: Check Rust formatting
-        working-directory: rust
-        run: cargo fmt --all -- --check
-
-      - name: Run Rust workspace tests
-        working-directory: rust
-        run: cargo test --workspace --locked
-
-      - name: Check generated Rust FFI bindings
-        working-directory: rust
-        run: cargo run --locked -p xtask -- generate --check
-
-      - name: Check Rust dependency policy
-        working-directory: rust
-        run: cargo deny check
-
-      - name: Audit Rust dependencies
-        working-directory: rust
-        run: cargo audit --file Cargo.lock
-
-      - name: Fuzz envelope decoding for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run envelope_decode corpus/envelope_decode -- -max_total_time=60
-
-      - name: Fuzz regex search for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run regex_search corpus/regex_search -- -max_total_time=60
-
-      - name: Fuzz path filtering for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run path_filter corpus/path_filter -- -max_total_time=60
-
-      - name: Fuzz apply-edits requests for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run apply_edits_request corpus/apply_edits_request -- -max_total_time=60
-
-      - name: Fuzz codemap requests for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run codemap_request corpus/codemap_request -- -max_total_time=60
-
-      - name: Fuzz inventory-scope-v1 bulk chunk decode for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run inventory_scope_bulk_chunk corpus/inventory_scope_bulk_chunk -- -max_total_time=60
-
-      - name: Fuzz inventory-scope-v1 delta event decode for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run inventory_scope_delta_event corpus/inventory_scope_delta_event -- -max_total_time=60
-
-      - name: Fuzz claude-ndjson-v1 codec/framer/translator for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run claude_ndjson_v1 corpus/claude_ndjson_v1 -- -max_total_time=60
-
-      - name: Fuzz agent-command-v1 event envelope decode for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run agent_command_v1 corpus/agent_command_v1 -- -max_total_time=60
-
-      - name: Fuzz agent-host-v1 wire frame decode for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run agent_host_frame_v1 corpus/agent_host_frame_v1 -- -max_total_time=60
-
-      - name: Fuzz agent session log header/record decode for 60 seconds
-        working-directory: rust/fuzz
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
-        run: cargo fuzz run agent_session_log_frame_v1 corpus/agent_session_log_frame_v1 -- -max_total_time=60
-
-      - name: Test Rust workspace
-        run: make dev-cargo-test CARGO_PACKAGE=all
-
-  provider-tests:
-    name: Provider Tests
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 30
-    runs-on: macos-26
-    steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Restore SwiftPM build cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            .build
-            Packages/RepoPromptAgentProviders/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-provider-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-swiftpm-
-
-      - name: Run Rust workspace tests
-        run: make dev-cargo-test CARGO_PACKAGE=all
-
   secret-scan:
     name: Secret Scan
-    if: github.event_name != 'schedule'
     timeout-minutes: 15
-    runs-on: macos-26
+    runs-on: ubuntu-latest
     steps:
-      - name: Require arm64 runner
-        run: |
-          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
-
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -361,7 +36,16 @@ jobs:
           fetch-depth: 0
 
       - name: Install gitleaks
-        run: brew install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          tar -xzf "/tmp/${archive}" -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
 
       - name: Scan introduced commit range
         env:
@@ -383,28 +67,3 @@ jobs:
 
       - name: Scan checked-in source tree
         run: gitleaks dir --redact .
-
-  dependency-audit:
-    name: Dependency Audit
-    # Linux at 1x billing, not macOS at 10x: `cargo audit` parses `rust/Cargo.lock` against
-    # the RustSec advisory database and builds nothing, so it has no reason to occupy an
-    # arm64 macOS runner. This is the only scheduled job here -- ADR-0007 makes advisory
-    # coverage a fail-closed gate, and a new advisory can land against dependencies that
-    # never changed, so it is the one check that must run on a clock rather than on a diff.
-    # The full `cargo deny`/`cargo audit` pair still runs in `rust-ffi` on dispatch and in
-    # local `preflight.sh pr-ready` on Rust-path changes.
-    if: github.event_name != 'pull_request'
-    timeout-minutes: 20
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Install pinned cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
-      - name: Audit Rust dependencies
-        working-directory: rust
-        run: cargo audit --file Cargo.lock

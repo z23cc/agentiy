@@ -19,9 +19,8 @@ For a bug, prefer a test that fails against known-bad behavior. If no stable con
 
 ## Choose the Layer
 
-- **Isolated core:** deterministic decisions, transformations, parsers, state machines, policy, invariants, and failure semantics.
-- **Provider package:** provider protocol, codec, translation, launch arguments, and model mapping under `Packages/RepoPromptAgentProviders/Tests`.
-- **Root SwiftPM:** module behavior without a GUI, including actors, persistence, fixtures, subprocess adapters, in-process MCP, and deterministic concurrency under `Tests/RepoPromptTests`.
+- **Isolated core:** deterministic decisions, transformations, parsers, state machines, policy, invariants, and failure semantics in Rust unit tests (`make dev-test`, `--lib`).
+- **Crate integration:** process, proptest, and fixture tests under `rust/crates/*/tests` (`CARGO_TEST_KIND=full`).
 - **Runtime diagnostics:** assembled-app-only rendering, restoration, routing instrumentation, churn, or resource investigations. Require a bounded scenario, privacy-safe machine-readable evidence, entry point, and cleanup path. Without an acceptance threshold, a benchmark is diagnostics.
 - **Live/packaged smoke:** real app/MCP wiring, bundle layout, embedded helpers, ownership, signing, provenance, and a few critical journeys.
 - **Structural guard:** last resort when executable behavior, compiler boundaries, lint, or guardrails cannot cheaply enforce a narrow constraint.
@@ -38,11 +37,11 @@ Redesign or omit invocation-only, no-crash, non-nil-only, source-shape, symbol-p
 
 Assert exact outcomes and negative boundaries. Keep one coherent contract per test; use labeled tables only for equivalent cases. Control time, randomness, locale, environment, resources, ordering, and concurrency; use gates, clocks, or continuations instead of sleeps. Use temporary resources and verify important cleanup or ownership. Add production seams only when narrow, deterministic, behavior-preserving, and justified.
 
-Use exact XCTest filters shaped as `RepoPromptTests.<Suite>/testMethod` or `RepoPromptClaudeCompatibleProviderTests.<Suite>/testMethod`. For ordinary changes, run the smallest focused daemon test first:
+Use a cargo substring filter. For ordinary changes, run the smallest focused daemon test first:
 
 ```bash
-make dev-test FILTER=RepoPromptTests.<Suite>/testMethod
-make dev-provider-test FILTER=RepoPromptClaudeCompatibleProviderTests.<Suite>/testMethod
+make dev-test FILTER=<rust_test_name>
+make dev-cargo-test CARGO_PACKAGE=runtime FILTER=<rust_test_name>
 ```
 
 Broaden to the affected target or full suite when the change crosses shared infrastructure, package boundaries, generated surfaces, or test harness behavior. Follow repository style and guardrails as applicable. Do not launch the app for ordinary logic.

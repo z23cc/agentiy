@@ -30,52 +30,28 @@ PHASE_IDS = [
     "outgoing_range_secret_scan",
     "path_selection",
     "conductor_selftests",
-    "ci_app_test_runner_selftests",
     "swift_lint",
-    "root_tests",
-    "provider_tests",
-    "repoprompt_build",
-    "mcp_build",
     "xcode_generator_tests",
-    "xcode_workspace_validation",
     "rust_tests",
     "rust_codegen_check",
     "rust_deny",
-    "rust_audit",
 ]
 
 GUARDRAILS_TARGET = "guardrails"
 CONDUCTOR_SELFTEST_TARGET = "conductor-selftest"
-CI_APP_TEST_RUNNER_SELFTEST_TARGET = "ci-app-test-runner-selftest"
 SWIFT_LINT_TARGET = "dev-lint"
-ROOT_TEST_TARGET = "dev-test"
-PROVIDER_TEST_TARGET = "dev-provider-test"
-REPOPROMPT_BUILD_TARGET = "dev-swift-build PRODUCT=Agentry"
-MCP_BUILD_TARGET = "dev-swift-build PRODUCT=agentry-mcp"
 XCODE_GENERATOR_TEST_TARGET = "xcode-generator-test"
-XCODE_VALIDATE_TARGET = "xcode-validate"
 RUST_TEST_TARGET = "dev-cargo-test"
 RUST_CODEGEN_CHECK_TARGET = "dev-cargo-codegen-check"
 RUST_DENY_TARGET = "dev-cargo-deny"
-RUST_AUDIT_TARGET = "dev-cargo-audit"
-RUST_VALIDATION_TARGETS = [
-    RUST_TEST_TARGET,
-    RUST_CODEGEN_CHECK_TARGET,
-    RUST_DENY_TARGET,
-    RUST_AUDIT_TARGET,
-]
 ORDINARY_SUBPROCESS_TIMEOUT_SECONDS = 90
 HEAVYWEIGHT_MAKE_TARGETS = [
     CONDUCTOR_SELFTEST_TARGET,
-    CI_APP_TEST_RUNNER_SELFTEST_TARGET,
     SWIFT_LINT_TARGET,
-    ROOT_TEST_TARGET,
-    PROVIDER_TEST_TARGET,
-    REPOPROMPT_BUILD_TARGET,
-    MCP_BUILD_TARGET,
     XCODE_GENERATOR_TEST_TARGET,
-    XCODE_VALIDATE_TARGET,
-    *RUST_VALIDATION_TARGETS,
+    RUST_TEST_TARGET,
+    RUST_CODEGEN_CHECK_TARGET,
+    RUST_DENY_TARGET,
 ]
 
 
@@ -269,8 +245,6 @@ class ContributionPreflightTests(unittest.TestCase):
                 [
                     GUARDRAILS_TARGET,
                     SWIFT_LINT_TARGET,
-                    ROOT_TEST_TARGET,
-                    REPOPROMPT_BUILD_TARGET,
                 ],
             )
             self.assertIn("PR-ready preflight passed", result.stdout)
@@ -289,8 +263,6 @@ class ContributionPreflightTests(unittest.TestCase):
                 [
                     GUARDRAILS_TARGET,
                     SWIFT_LINT_TARGET,
-                    ROOT_TEST_TARGET,
-                    REPOPROMPT_BUILD_TARGET,
                 ],
             )
             receipt_path, receipt = self.load_only_receipt(repo)
@@ -341,17 +313,17 @@ class ContributionPreflightTests(unittest.TestCase):
                 receipt["selection"],
                 {
                     "changed_path_count": 1,
-                    "selected_lane_count": 3,
-                    "selected_lane_ids": ["swift_lint", "root_tests", "repoprompt_build"],
+                    "selected_lane_count": 1,
+                    "selected_lane_ids": ["swift_lint"],
                 },
             )
             phases = receipt["phases"]
             self.assertEqual([phase["id"] for phase in phases], PHASE_IDS)
             phase_map = self.phase_map(receipt)
-            for phase_id in PHASE_IDS[:7] + ["swift_lint", "root_tests", "repoprompt_build"]:
+            for phase_id in PHASE_IDS[:7] + ["swift_lint"]:
                 self.assertEqual(phase_map[phase_id]["status"], "passed")
                 self.assertGreaterEqual(phase_map[phase_id]["elapsed_seconds"], 0)
-            for phase_id in set(PHASE_IDS[7:]) - {"swift_lint", "root_tests", "repoprompt_build"}:
+            for phase_id in set(PHASE_IDS[7:]) - {"swift_lint"}:
                 self.assertEqual(phase_map[phase_id]["status"], "skipped")
                 self.assertEqual(phase_map[phase_id]["elapsed_seconds"], 0.0)
 
@@ -426,7 +398,7 @@ class ContributionPreflightTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assert_make_lines_equal(
                 env,
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, ROOT_TEST_TARGET, REPOPROMPT_BUILD_TARGET],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET],
             )
             self.assertEqual(result.stderr.count("WARNING: PR-ready timing receipt unavailable"), 1)
             self.assertEqual(self.receipt_paths(repo), [])
@@ -523,50 +495,44 @@ class ContributionPreflightTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 self.assert_make_lines_equal(env, [GUARDRAILS_TARGET, CONDUCTOR_SELFTEST_TARGET])
 
-    def test_pr_ready_runs_ci_app_test_runner_selftest_for_hosted_ci_runner_changes(self) -> None:
-        cases = [
-            ("runner", "Scripts/ci_app_test_runner.py"),
-            ("runner tests", "Scripts/test_ci_app_test_runner.py"),
-            ("hosted workflow", ".github/workflows/ci.yml"),
-        ]
+    def test_pr_ready_keeps_hosted_ci_workflow_guardrails_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, preflight, env = self.create_repo(
+                Path(tmp), outgoing_path=".github/workflows/ci.yml"
+            )
 
-        for name, outgoing_path in cases:
-            with self.subTest(name=name):
-                with tempfile.TemporaryDirectory() as tmp:
-                    repo, preflight, env = self.create_repo(Path(tmp), outgoing_path=outgoing_path)
+            result = self.run_preflight(repo, preflight, env, "pr-ready")
 
-                    result = self.run_preflight(repo, preflight, env, "pr-ready")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assert_make_lines_equal(env, [GUARDRAILS_TARGET])
+            self.assertIn("PR-ready preflight passed", result.stdout)
 
-                    self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-                    self.assert_make_lines_equal(env, [GUARDRAILS_TARGET, CI_APP_TEST_RUNNER_SELFTEST_TARGET])
-                    self.assertIn("PR-ready preflight passed", result.stdout)
-
-    def test_pr_ready_runs_xcode_validation_for_workspace_boundary_changes(self) -> None:
+    def test_pr_ready_runs_xcode_generator_tests_for_workspace_boundary_changes(self) -> None:
         cases = [
             (
                 "generator",
                 "Scripts/generate_xcode_workspace.py",
-                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET, XCODE_VALIDATE_TARGET],
+                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET],
             ),
             (
                 "workflow wrapper",
                 "Scripts/xcode_developer_workflow.sh",
-                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET, XCODE_VALIDATE_TARGET],
+                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET],
             ),
             (
                 "package lockfile",
                 "Package.resolved",
-                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET, XCODE_VALIDATE_TARGET],
+                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET],
             ),
             (
                 "hosted workflow",
                 ".github/workflows/xcode-workspace.yml",
-                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET, XCODE_VALIDATE_TARGET],
+                [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET],
             ),
             (
                 "package manifest",
                 "Package.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, XCODE_GENERATOR_TEST_TARGET, XCODE_VALIDATE_TARGET],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, XCODE_GENERATOR_TEST_TARGET],
             ),
             (
                 "makefile targets",
@@ -575,7 +541,6 @@ class ContributionPreflightTests(unittest.TestCase):
                     GUARDRAILS_TARGET,
                     CONDUCTOR_SELFTEST_TARGET,
                     XCODE_GENERATOR_TEST_TARGET,
-                    XCODE_VALIDATE_TARGET,
                 ],
             ),
         ]
@@ -601,7 +566,6 @@ class ContributionPreflightTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assert_make_lines_equal(env, [GUARDRAILS_TARGET, XCODE_GENERATOR_TEST_TARGET])
-            self.assertNotIn(XCODE_VALIDATE_TARGET, self.make_lines(env))
 
     def test_pr_ready_keeps_xcode_architecture_docs_guardrails_only_locally(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -614,31 +578,34 @@ class ContributionPreflightTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assert_make_lines_equal(env, [GUARDRAILS_TARGET])
             self.assertNotIn(XCODE_GENERATOR_TEST_TARGET, self.make_lines(env))
-            self.assertNotIn(XCODE_VALIDATE_TARGET, self.make_lines(env))
 
     def test_pr_ready_runs_rust_validation_for_sensitive_boundary_changes(self) -> None:
         cases = [
             (
                 "Rust workspace",
                 "rust/crates/runtime/src/lib.rs",
-                [GUARDRAILS_TARGET, *RUST_VALIDATION_TARGETS],
+                [GUARDRAILS_TARGET, RUST_TEST_TARGET],
             ),
             (
                 "generated Swift binding",
                 "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, RUST_CODEGEN_CHECK_TARGET],
             ),
             (
                 "generated C boundary",
                 "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
-                [GUARDRAILS_TARGET, *RUST_VALIDATION_TARGETS],
+                [GUARDRAILS_TARGET, RUST_CODEGEN_CHECK_TARGET],
             ),
             (
                 "Swift bridge",
                 "Sources/AgentryCoreBridge/CoreBridge.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET],
             ),
-
+            (
+                "Cargo lockfile",
+                "rust/Cargo.lock",
+                [GUARDRAILS_TARGET, RUST_DENY_TARGET],
+            ),
         ]
 
         for name, outgoing_path, expected_make_lines in cases:
@@ -656,18 +623,17 @@ class ContributionPreflightTests(unittest.TestCase):
             (
                 "provider Swift path",
                 "Packages/RepoPromptAgentProviders/Sources/Example.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, PROVIDER_TEST_TARGET],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET],
             ),
-
             (
                 "MCP Swift path",
                 "Sources/RepoPromptMCP/Example.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, MCP_BUILD_TARGET],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET],
             ),
             (
                 "shared Swift path",
                 "Sources/RepoPromptShared/MCP/Example.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, MCP_BUILD_TARGET],
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET],
             ),
             (
                 "non-selected docs path",

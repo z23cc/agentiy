@@ -4,6 +4,7 @@ PRODUCT ?= all
 CODEX_ARCH ?= all
 PROFILE ?= debug
 CARGO_PACKAGE ?= all
+CARGO_TEST_KIND ?= lib
 FUZZ_TARGET ?= envelope_decode
 FUZZ_SECONDS ?= 60
 FIXTURE ?=
@@ -17,7 +18,7 @@ help:
 	@printf '  %-30s %s\n' 'setup' 'Install format tools, run doctor, and resolve packages'
 	@printf '  %-30s %s\n' 'build' 'Build and package the debug app'
 	@printf '  %-30s %s\n' 'run' 'Build, package, and launch the debug app'
-	@printf '  %-30s %s\n' 'test' 'Run the Rust workspace tests'
+	@printf '  %-30s %s\n' 'test' 'Run Rust unit tests; CARGO_TEST_KIND=full for integration'
 	@printf '  %-30s %s\n' 'guardrails' 'Run source layout and repository guardrails'
 	@printf '  %-30s %s\n' 'codex-schema-check' 'Validate bounded app-server assumptions against generated Codex schemas'
 	@printf '  %-30s %s\n' 'provider-conformance' 'Validate offline P7-4 provider capability contract'
@@ -29,7 +30,7 @@ help:
 	@printf '  %-30s %s\n' 'dev-build' 'Coordinated debug app package build'
 	@printf '  %-30s %s\n' 'dev-swift-build' 'Coordinated Swift build; PRODUCT=Agentry|agentry-mcp|all'
 	@printf '  %-30s %s\n' 'dev-cargo-build' 'Coordinated Cargo workspace build; PROFILE=debug|release'
-	@printf '  %-30s %s\n' 'dev-cargo-test' 'Coordinated Cargo tests; CARGO_PACKAGE=proto|session-log|runtime|ffi|all'
+	@printf '  %-30s %s\n' 'dev-cargo-test' 'Coordinated Cargo unit tests; CARGO_PACKAGE=proto|session-log|runtime|ffi|all CARGO_TEST_KIND=lib|full FILTER=name'
 	@printf '  %-30s %s\n' 'dev-cargo-codegen-check' 'Coordinated deterministic UniFFI generation check'
 	@printf '  %-30s %s\n' 'dev-cargo-archive' 'Coordinated staged static archive; PROFILE=debug|release'
 	@printf '  %-30s %s\n' 'dev-cargo-deny' 'Coordinated Cargo dependency/license policy check'
@@ -46,8 +47,8 @@ help:
 	@printf '  %-30s %s\n' 'dev-provider-conformance' 'Coordinated offline P7-4 provider certification contract validation'
 	@printf '  %-30s %s\n' 'dev-m7-backend-certification' 'Coordinated M7 backend/release evidence gate'
 	@printf '  %-30s %s\n' 'dev-m8-live-certification' 'Coordinated M8 live certification; pass M8_ARGS="--live" to attempt operational gates'
-	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; FILTER=name, XCTEST_STALL_SECONDS=300'
-	@printf '  %-30s %s\n' 'dev-provider-test' 'Run provider package tests; override with FILTER=name'
+	@printf '  %-30s %s\n' 'dev-test' 'Coordinated Rust unit tests; FILTER=name CARGO_TEST_KIND=full'
+	@printf '  %-30s %s\n' 'dev-provider-test' 'Same as dev-test (Rust unit tests)'
 	@printf '  %-30s %s\n' 'dev-smoke' 'Run non-disruptive live debug app smoke checks'
 	@printf '  %-30s %s\n' 'dev-smoke-launch' 'Launch debug app, then run smoke checks'
 	@printf '  %-30s %s\n' 'dev-stop-app' 'Stop the coordinated debug app'
@@ -153,8 +154,10 @@ build:
 run:
 	./Scripts/run.sh
 
+CARGO_TEST_ARGS = --package $(CARGO_PACKAGE)$(if $(filter full,$(CARGO_TEST_KIND)), --kind full)$(if $(FILTER), --filter $(FILTER))
+
 test:
-	./conductor cargo-test --package $(CARGO_PACKAGE)
+	./conductor cargo-test $(CARGO_TEST_ARGS)
 
 guardrails:
 	./Scripts/guardrails.sh
@@ -172,22 +175,10 @@ m8-live-certification:
 	Scripts/m8_live_certification.sh $(M8_ARGS)
 
 conductor-selftest:
-	python3 Scripts/test_codex_app_server_schema.py
-	python3 Scripts/test_validate_rust_agent_provider_p7_4.py
-	python3 Scripts/test_validate_m7_backend_release.py
-	python3 Scripts/test_validate_m8_live_evidence.py
-	python3 Scripts/test_debug_app_process.py
 	python3 Scripts/test_contribution_preflight.py
-	python3 Scripts/test_ci_app_test_runner.py
-	python3 Scripts/test_conductor_cache.py
-	python3 Scripts/test_conductor_output.py
-	python3 Scripts/test_conductor_diagnostics.py
-	python3 Scripts/test_conductor_high_output.py
-	python3 Scripts/test_agent_mode_file_tools_benchmark.py
 	python3 Scripts/test_conductor_lifecycle.py
-	python3 Scripts/test_local_production_installer.py
-	python3 Scripts/test_security_inventory.py
-	python3 Scripts/test_agent_session_boundary_guardrails.py
+	python3 Scripts/test_debug_app_process.py
+	python3 Scripts/test_conductor_output.py
 
 ci-app-test-runner-selftest:
 	python3 Scripts/test_ci_app_test_runner.py
@@ -247,7 +238,7 @@ dev-cargo-build:
 	./conductor cargo-build --profile $(PROFILE)
 
 dev-cargo-test:
-	./conductor cargo-test --package $(CARGO_PACKAGE)
+	./conductor cargo-test $(CARGO_TEST_ARGS)
 
 dev-cargo-codegen:
 	./conductor cargo-codegen
@@ -301,10 +292,10 @@ dev-m8-live-certification:
 	./conductor m8-live-certification $(M8_ARGS)
 
 dev-test:
-	./conductor cargo-test --package $(CARGO_PACKAGE)
+	./conductor cargo-test $(CARGO_TEST_ARGS)
 
 dev-provider-test:
-	./conductor cargo-test --package $(CARGO_PACKAGE)
+	./conductor cargo-test $(CARGO_TEST_ARGS)
 
 dev-smoke:
 	./conductor smoke

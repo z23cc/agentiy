@@ -58,6 +58,8 @@ UniFFI is the **accepted** raw binder (ADR-0001, user decision 2026-08-20), with
 
 > **Evidence-drift note (2026-09-01).** Until this revision the two G8 rows above contradicted each other and this sentence: the matrix row said **Pass** while the final-status row said **Conditional pass**, and both were stale. Root cause: this document was last revised 2026-08-22, while `ci.yml` kept moving (the `agent_command_v1` and `claude_ndjson_v1` fuzz targets were both added 2026-08-24; only the latter was wired into CI). The stale prose is what let that gap survive — the doc advertised "five fuzz jobs", so nobody was counting. Both rows' *factual* content is now reconciled against the workflow (the final-status verdict cell is deliberately left at Conditional pass for the decision owner), the missing target is wired in, and `Scripts/rust_ffi_guardrails.py::check_fuzz_target_coverage` fails closed if declared targets and CI steps diverge again. **When editing a G-row, verify against the workflow/script it cites, not against the neighbouring row.**
 
+> **Cost-policy update (2026-09-04).** Hosted `CI` no longer runs macOS rust-ffi, fuzz, or product jobs. Pull requests run Linux secret-scan only. Weekly `cargo audit` lives in `dependency-audit.yml` so it cannot complete the `CI` workflow on `main` and wake beta publishing. Default local `cargo-test` is `--lib`; `CARGO_TEST_KIND=full` restores workspace integration tests. `check_fuzz_target_coverage` allows zero hosted fuzz steps and fail-closes only when CI runs a partial target list.
+
 Passing the Rust-side Phases 1–6 evidence alone is not evidence that the cross-language G3–G7 gates pass.
 
 ### Phase 5–6 G5/G7 evidence register (historical stage record)

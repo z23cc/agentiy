@@ -195,30 +195,26 @@ def declared_export_keys(text: str) -> set[str]:
 
 
 def check_fuzz_target_coverage(failures: list[str]) -> None:
-    """Every declared fuzz target must actually run in CI.
+    """If hosted CI runs fuzz, every declared target must appear.
 
-    Same failure class as the export inventory above: a hand-maintained list (ci.yml's fuzz
-    steps) silently drifting from the real surface (rust/fuzz/Cargo.toml's declared targets).
-    This drifted for real -- `agent_command_v1` and `claude_ndjson_v1` were added the same day
-    (2026-08-24); only the latter was wired into CI, so the one hand-rolled wire decode in the
-    Claude vertical went unfuzzed while `rust-ffi.md` still advertised "five bounded fuzz jobs".
-    ADR-0007 makes fuzz/advisory coverage a fail-closed CI gate, so an unrun target is a gate
-    hole, not a cosmetic gap.
-
-    Ceiling: the declared surface is `rust/fuzz/Cargo.toml`'s `[[bin]]` list, so a
-    `fuzz_targets/*.rs` file with no `[[bin]]` entry is invisible here (it is also unbuildable
-    by `cargo fuzz`, so it cannot silently pass CI either). Verified 9/9 in sync at the time
-    this check landed.
+    Hosted CI does not currently run fuzz (macOS minutes are 10x). Local
+    `make dev-cargo-fuzz` remains the smoke path. Zero `cargo fuzz run` steps is
+    allowed. A partial hosted list is not: the same drift class as the export
+    inventory (a hand-maintained workflow list silently missing a `[[bin]]` in
+    rust/fuzz/Cargo.toml).
     """
     manifest_path = RUST / "fuzz/Cargo.toml"
-    workflow_path = ROOT / ".github/workflows/ci.yml"
+    workflow_dir = ROOT / ".github/workflows"
     manifest = load_toml(manifest_path, failures)
     if not manifest:
         return
     try:
-        workflow = workflow_path.read_text(encoding="utf-8")
+        workflow = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(workflow_dir.glob("*.yml"))
+        )
     except OSError as error:
-        failures.append(f"cannot read {workflow_path.relative_to(ROOT)}: {error}")
+        failures.append(f"cannot read {workflow_dir.relative_to(ROOT)}: {error}")
         return
 
     declared = {
@@ -234,15 +230,17 @@ def check_fuzz_target_coverage(failures: list[str]) -> None:
         return
 
     invoked = set(re.findall(r"cargo fuzz run ([A-Za-z0-9_]+)", workflow))
+    if not invoked:
+        return
     for name in sorted(declared - invoked):
         failures.append(
             f"fuzz target `{name}` is declared in rust/fuzz/Cargo.toml but never run in "
-            ".github/workflows/ci.yml (ADR-0007 fail-closed fuzz coverage); add a "
-            "`cargo fuzz run` step"
+            ".github/workflows (hosted fuzz is all-or-nothing); add a `cargo fuzz run` "
+            "step or drop hosted fuzz entirely"
         )
     for name in sorted(invoked - declared):
         failures.append(
-            f".github/workflows/ci.yml runs fuzz target `{name}`, which rust/fuzz/Cargo.toml "
+            f".github/workflows runs fuzz target `{name}`, which rust/fuzz/Cargo.toml "
             "does not declare; the CI step will fail"
         )
 

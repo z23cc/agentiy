@@ -73,12 +73,12 @@ authoritative.
 ```bash
 make xcode                  # generate and open
 make xcode-generate         # generate without opening
-make xcode-generator-test   # deterministic generator contract tests (default CI)
+make xcode-generator-test   # deterministic generator contract tests (local pr-ready)
 make xcode-validate         # explicit full validation with xcodebuild -list
 make xcode-clean            # remove generated workspace metadata
 ```
 
-Default CI runs `make xcode-generator-test`; full `make xcode-validate` is explicit and runs through local `pr-ready` for Xcode workspace boundary changes or the dedicated `Xcode Workspace Validation` workflow.
+Hosted CI is Linux secret-scan only. `make xcode-generator-test` runs locally via `pr-ready` on generator-boundary paths; full `make xcode-validate` is explicit or `workflow_dispatch` on `Xcode Workspace Validation`.
 
 Xcode 26.3 exposes the native `Agentry` and `agentry-mcp` product schemes.
 Use `Agentry App` and `Agentry MCP` for conductor-coordinated debug
@@ -161,14 +161,13 @@ make dev-status
 make dev-build
 make dev-swift-build PRODUCT=agentry-mcp         # focused product build (PRODUCT=Agentry|agentry-mcp|all, default all)
 make dev-cargo-build                               # coordinated Rust workspace build; PROFILE=debug|release
-make dev-cargo-test                                # coordinated Rust workspace tests; CARGO_PACKAGE=proto|runtime|ffi|all
+make dev-cargo-test                                # coordinated Rust unit tests; CARGO_PACKAGE=proto|runtime|ffi|all CARGO_TEST_KIND=lib|full
 make dev-cargo-codegen-check                       # coordinated deterministic UniFFI generation check
 make dev-cargo-archive                             # coordinated staged static archive; PROFILE=debug|release
 make dev-run
 make dev-launch-existing                         # launch current DebugApps bundle without building
-make dev-test                                       # full coordinated test suite
-make dev-test FILTER=WorkspaceFileContextStoreTests # focused coordinated test run
-make dev-provider-test                              # RepoPromptAgentProviders package tests (FILTER= also supported)
+make dev-test                                       # coordinated Rust unit tests; FILTER=name CARGO_TEST_KIND=full
+make dev-provider-test                              # same as dev-test (Rust unit tests)
 make dev-smoke          # non-disruptive: requires an already-running Agentry debug app and installed debug CLI
 make dev-smoke-launch   # builds/launches the debug app, then runs the smoke flow
 make dev-format-check   # non-mutating coordinated SwiftFormat check
@@ -273,8 +272,9 @@ make dev-format-tools-status
 Prefer the coordinated daemon so concurrent agents do not test over each other:
 
 ```bash
-make dev-test                                        # full coordinated suite
-make dev-test FILTER=WorkspaceFileContextStoreTests   # focused coordinated run
+make dev-test                                        # Rust unit tests (`--lib`)
+make dev-test FILTER=workspace_persistence           # focused cargo filter
+make dev-test CARGO_TEST_KIND=full                   # include integration/process/proptest
 ```
 
 Focused validation commands commonly used for this tree (all daemon-coordinated):
@@ -282,16 +282,14 @@ Focused validation commands commonly used for this tree (all daemon-coordinated)
 ```bash
 make dev-format-check
 make dev-lint
-make dev-test FILTER=CodexRuntimeAuthorityTests
-make dev-test FILTER=WorkspaceFileContextStoreTests
+make dev-test
 make dev-swift-build PRODUCT=Agentry
 make dev-swift-build PRODUCT=agentry-mcp
 make dev-cargo-build
 make dev-cargo-test CARGO_PACKAGE=all
+make dev-cargo-test CARGO_TEST_KIND=full
 make dev-cargo-codegen-check
 make dev-cargo-archive PROFILE=debug
-make dev-provider-test
-make dev-codex-schema-check
 make guardrails
 make doctor
 make dev-build
@@ -299,13 +297,13 @@ make dev-build
 
 Run the smallest relevant daemon build/test command above to validate a change. If the change affects packaging, the MCP server, the MCP CLI, Agent Mode, or any feature that depends on the running app, follow it with the live CE MCP smoke flow above.
 
-Direct `swift test --filter <name>` and `swift build --product <name>` still work and produce the same result, but they are uncoordinated — use them only when the daemon is unavailable (for example, no `python3`), and avoid them when other agents may be building.
+Direct `cargo test` and `swift build --product <name>` still work and produce the same result, but they are uncoordinated — use them only when the daemon is unavailable (for example, no `python3`), and avoid them when other agents may be building.
 
 Use `make dev-run` (or `make run`) only when it is safe to stop any existing Agentry instance and launch the local debug app.
 
-### XCTest optimization inventory and timing
+### Test quality and timing
 
-See [`docs/testing.md`](docs/testing.md) for the contributor workflow, test-quality guidance, exact focused-filter examples, and handoff checklist. Routine executable adds, renames, consolidations, and removals require the affected focused test plus broader target or full-suite validation when the changed boundary warrants it.
+See [`docs/testing.md`](docs/testing.md) for the contributor workflow, test-quality guidance, cargo filters, and handoff checklist. Default `make dev-test` is Rust `--lib`. Use `CARGO_TEST_KIND=full` when the change needs integration, process, or proptest coverage.
 
 ## Cleanup
 

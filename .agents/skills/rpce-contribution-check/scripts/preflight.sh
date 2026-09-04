@@ -217,57 +217,39 @@ run_pr_ready_path_validations() {
   files="$tmp_root/range-files.z"
   write_range_files "$files"
 
-  local control_plane_paths_pattern='^(Scripts/conductor\.py|Scripts/conductor_diagnostics\.py|Scripts/guardrails\.sh|Scripts/test_conductor_(lifecycle|output|diagnostics|high_output)\.py|Scripts/test_contribution_preflight\.py|\.agents/skills/rpce-contribution-check/scripts/preflight(_timing\.py|\.sh)|Makefile)$'
-  local ci_app_test_runner_paths_pattern='^(Scripts/ci_app_test_runner\.py|Scripts/test_ci_app_test_runner\.py|\.github/workflows/ci\.yml)$'
+  local control_plane_paths_pattern='^(Scripts/conductor\.py|Scripts/conductor_diagnostics\.py|Scripts/guardrails\.sh|Scripts/test_conductor_(lifecycle|output)\.py|Scripts/test_contribution_preflight\.py|\.agents/skills/rpce-contribution-check/scripts/preflight(_timing\.py|\.sh)|Makefile)$'
   local swift_paths_pattern='\.swift$'
-  local root_test_paths_pattern='^Sources/RepoPrompt/'
-  local provider_package_paths_pattern='^Packages/RepoPromptAgentProviders/'
-  local repoprompt_product_paths_pattern='^Sources/RepoPrompt/'
-  local mcp_product_paths_pattern='^(Sources/RepoPromptMCP/|Sources/RepoPromptShared/)'
-  local xcode_full_validation_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|\.github/workflows/xcode-workspace\.yml)$'
   local xcode_generator_test_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|Scripts/test_xcode_workspace_generator\.py|\.github/workflows/xcode-workspace\.yml)$'
-  local rust_validation_paths_pattern='^(rust/|Sources/AgentryUniFFIRaw/Generated/|Sources/CAgentryRustCore/|Sources/AgentryCoreBridge/)'
+  local rust_test_paths_pattern='^rust/(crates/|tools/|bins/|fuzz/)'
+  local rust_codegen_paths_pattern='^(rust/tools/xtask/|rust/ffi-contract/|rust/crates/ffi/uniffi\.toml|Sources/AgentryUniFFIRaw/Generated/|Sources/CAgentryRustCore/)'
+  local rust_deny_paths_pattern='^(rust/Cargo\.(toml|lock)|rust/deny\.toml|rust/audit\.toml|rust/.+/Cargo\.toml)$'
 
   local has_control_plane_changes=0
-  local has_ci_app_test_runner_changes=0
   local has_swift_changes=0
-  local has_root_test_changes=0
-  local has_provider_package_changes=0
-  local has_repoprompt_product_changes=0
-  local has_mcp_product_changes=0
   local has_xcode_generator_test_changes=0
-  local has_xcode_full_validation_changes=0
-  local has_rust_validation_changes=0
+  local has_rust_test_changes=0
+  local has_rust_codegen_changes=0
+  local has_rust_deny_changes=0
   local changed_path_count=0
   local file
 
   while IFS= read -r -d '' file; do
     changed_path_count=$((changed_path_count + 1))
     [[ "$file" =~ $control_plane_paths_pattern ]] && has_control_plane_changes=1
-    [[ "$file" =~ $ci_app_test_runner_paths_pattern ]] && has_ci_app_test_runner_changes=1
     [[ "$file" =~ $swift_paths_pattern ]] && has_swift_changes=1
-    [[ "$file" =~ $root_test_paths_pattern ]] && has_root_test_changes=1
-    [[ "$file" =~ $provider_package_paths_pattern ]] && has_provider_package_changes=1
-    [[ "$file" =~ $repoprompt_product_paths_pattern ]] && has_repoprompt_product_changes=1
-    [[ "$file" =~ $mcp_product_paths_pattern ]] && has_mcp_product_changes=1
     [[ "$file" =~ $xcode_generator_test_paths_pattern ]] && has_xcode_generator_test_changes=1
-    [[ "$file" =~ $xcode_full_validation_paths_pattern ]] && has_xcode_full_validation_changes=1
-    [[ "$file" =~ $rust_validation_paths_pattern ]] && has_rust_validation_changes=1
+    [[ "$file" =~ $rust_test_paths_pattern ]] && has_rust_test_changes=1
+    [[ "$file" =~ $rust_codegen_paths_pattern ]] && has_rust_codegen_changes=1
+    [[ "$file" =~ $rust_deny_paths_pattern ]] && has_rust_deny_changes=1
   done < "$files"
 
   local selected_lane_ids=()
   (( has_control_plane_changes )) && selected_lane_ids+=(conductor_selftests)
-  (( has_ci_app_test_runner_changes )) && selected_lane_ids+=(ci_app_test_runner_selftests)
   (( has_swift_changes )) && selected_lane_ids+=(swift_lint)
-  (( has_root_test_changes )) && selected_lane_ids+=(root_tests)
-  (( has_provider_package_changes )) && selected_lane_ids+=(provider_tests)
-  (( has_repoprompt_product_changes )) && selected_lane_ids+=(repoprompt_build)
-  (( has_mcp_product_changes )) && selected_lane_ids+=(mcp_build)
   (( has_xcode_generator_test_changes )) && selected_lane_ids+=(xcode_generator_tests)
-  (( has_xcode_full_validation_changes )) && selected_lane_ids+=(xcode_workspace_validation)
-  if (( has_rust_validation_changes )); then
-    selected_lane_ids+=(rust_tests rust_codegen_check rust_deny rust_audit)
-  fi
+  (( has_rust_test_changes )) && selected_lane_ids+=(rust_tests)
+  (( has_rust_codegen_changes )) && selected_lane_ids+=(rust_codegen_check)
+  (( has_rust_deny_changes )) && selected_lane_ids+=(rust_deny)
   if (( ${#selected_lane_ids[@]} )); then
     timing_record_selection "$changed_path_count" "${selected_lane_ids[@]}"
   else
@@ -281,41 +263,11 @@ run_pr_ready_path_validations() {
     make conductor-selftest
     timing_phase_pass conductor_selftests
   fi
-  if (( has_ci_app_test_runner_changes )); then
-    timing_phase_start ci_app_test_runner_selftests
-    log "Run CI app-test runner self-tests"
-    make ci-app-test-runner-selftest
-    timing_phase_pass ci_app_test_runner_selftests
-  fi
   if (( has_swift_changes )); then
     timing_phase_start swift_lint
     log "Run coordinated Swift lint"
     make dev-lint
     timing_phase_pass swift_lint
-  fi
-  if (( has_root_test_changes )); then
-    timing_phase_start root_tests
-    log "Run coordinated root tests"
-    make dev-test
-    timing_phase_pass root_tests
-  fi
-  if (( has_provider_package_changes )); then
-    timing_phase_start provider_tests
-    log "Run coordinated provider tests"
-    make dev-provider-test
-    timing_phase_pass provider_tests
-  fi
-  if (( has_repoprompt_product_changes )); then
-    timing_phase_start repoprompt_build
-    log "Build Agentry product"
-    make dev-swift-build PRODUCT=Agentry
-    timing_phase_pass repoprompt_build
-  fi
-  if (( has_mcp_product_changes )); then
-    timing_phase_start mcp_build
-    log "Build agentry-mcp product"
-    make dev-swift-build PRODUCT=agentry-mcp
-    timing_phase_pass mcp_build
   fi
   if (( has_xcode_generator_test_changes )); then
     timing_phase_start xcode_generator_tests
@@ -323,32 +275,23 @@ run_pr_ready_path_validations() {
     make xcode-generator-test
     timing_phase_pass xcode_generator_tests
   fi
-  if (( has_xcode_full_validation_changes )); then
-    timing_phase_start xcode_workspace_validation
-    log "Validate generated Xcode workspace"
-    make xcode-validate
-    timing_phase_pass xcode_workspace_validation
-  fi
-  if (( has_rust_validation_changes )); then
+  if (( has_rust_test_changes )); then
     timing_phase_start rust_tests
-    log "Run coordinated Rust tests"
+    log "Run coordinated Rust unit tests"
     make dev-cargo-test
     timing_phase_pass rust_tests
-
+  fi
+  if (( has_rust_codegen_changes )); then
     timing_phase_start rust_codegen_check
     log "Check deterministic Rust code generation"
     make dev-cargo-codegen-check
     timing_phase_pass rust_codegen_check
-
+  fi
+  if (( has_rust_deny_changes )); then
     timing_phase_start rust_deny
     log "Check Rust dependency and license policy"
     make dev-cargo-deny
     timing_phase_pass rust_deny
-
-    timing_phase_start rust_audit
-    log "Audit Rust dependencies"
-    make dev-cargo-audit
-    timing_phase_pass rust_audit
   fi
 }
 

@@ -2249,7 +2249,7 @@ class LifecycleQueueTests(LifecycleTestCase):
                 self.assertTrue(conductor.operation_requires_global_heavy_slot(requests[name]["operation"], requests[name]["args"]))
 
         self.assertEqual(prepared["build"][0][-1], "--release")
-        self.assertEqual(prepared["test"][0][-2:], ["-p", "agentry-runtime"])
+        self.assertEqual(prepared["test"][0][-3:], ["-p", "agentry-runtime", "--lib"])
         self.assertEqual(prepared["codegen"][0][-2:], ["generate", "--check"])
         self.assertEqual(prepared["archive"][0][-3:], ["archive", "--profile", "debug"])
         self.assertEqual(prepared["deny"][0][-2:], ["deny", "check"])
@@ -4044,7 +4044,10 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             }
         )
 
-        self.assertEqual(root_argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
+        self.assertEqual(
+            root_argv[1:],
+            ["test", "--locked", "--target", conductor.CARGO_TARGET, "--lib", "--", "WorkspaceTests"],
+        )
         self.assertEqual(root_lanes, ["build"])
         self.assertEqual(root_cwd, state.paths.repo_root / "rust")
 
@@ -4077,7 +4080,10 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         root_argv, root_lanes, root_cwd, _env, _timeout = registry.prepare(
             {"operation": "test", "args": expected}
         )
-        self.assertEqual(root_argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
+        self.assertEqual(
+            root_argv[1:],
+            ["test", "--locked", "--target", conductor.CARGO_TARGET, "--lib", "--", "AgentryCoreBridge"],
+        )
         self.assertEqual(root_lanes, ["build"])
         self.assertEqual(root_cwd, state.paths.repo_root / "rust")
 
@@ -4226,7 +4232,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 }
             )
 
-        self.assertEqual(argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
+        self.assertEqual(argv[1:], ["test", "--locked", "--target", conductor.CARGO_TARGET, "--lib"])
         self.assertEqual(lanes, ["build"])
         self.assertEqual(cwd, Path(tmp) / "rust")
         self.assertNotIn("AGENTRY_APPLICATION_SUPPORT_ROOT", env)

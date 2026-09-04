@@ -110,6 +110,30 @@ CARGO_PACKAGE_NAMES = {
     "runtime": "agentry-runtime",
     "ffi": "agentry-ffi",
 }
+CARGO_TEST_KINDS = ("lib", "full")
+
+
+def cargo_test_argv(
+    cargo: str,
+    *,
+    package: str = "all",
+    kind: str = "lib",
+    extra_filter: str | None = None,
+) -> list[str]:
+    """Default `lib` runs unit tests only; `full` includes integration/process/proptest suites."""
+    argv = [cargo, "test"]
+    if kind == "full" and package == "all":
+        argv.append("--workspace")
+    argv.extend(["--locked", "--target", CARGO_TARGET])
+    if package != "all":
+        argv.extend(["-p", CARGO_PACKAGE_NAMES[package]])
+    if kind == "lib":
+        argv.append("--lib")
+    if extra_filter:
+        argv.extend(["--", extra_filter])
+    return argv
+
+
 BUILD_CACHE_ENV_KEYS = (
     "ARCHS",
     "CC",
@@ -272,7 +296,7 @@ Operation commands:
   ./conductor m7-backend-certification # validate M7 backend cutover and release evidence
   ./conductor m8-live-certification [--live] # run M8 live certification and write a redacted receipt
   ./conductor cargo-build [--profile debug|release]
-  ./conductor cargo-test [--package proto|session-log|runtime|ffi|all]
+  ./conductor cargo-test [--package proto|session-log|runtime|ffi|all] [--kind lib|full] [--filter <name>]
   ./conductor cargo-codegen [--check]
   ./conductor cargo-archive [--profile debug|release]
   ./conductor cargo-deny
@@ -3366,6 +3390,9 @@ class OperationRegistry:
                     + ", ".join(sorted(CARGO_PACKAGE_NAMES))
                     + ", or all"
                 )
+            kind = str(args.get("kind") or "lib")
+            if operation == "cargo-test" and kind not in CARGO_TEST_KINDS:
+                raise ConductorError("cargo test kind must be lib or full")
             if operation == "cargo-codegen" and set(args) - {"check"}:
                 raise ConductorError("cargo-codegen accepts only the check flag")
             if operation in {"cargo-deny", "cargo-audit"} and args:
@@ -3394,9 +3421,14 @@ class OperationRegistry:
                 return argv, ["build"], cwd, env, effective_timeout
             if operation == "cargo-test":
                 package = str(args.get("package") or "all")
-                argv = [cargo, "test", "--workspace", "--locked", "--target", CARGO_TARGET]
-                if package != "all":
-                    argv = [cargo, "test", "--locked", "--target", CARGO_TARGET, "-p", CARGO_PACKAGE_NAMES[package]]
+                kind = str(args.get("kind") or "lib")
+                extra_filter = args.get("filter")
+                argv = cargo_test_argv(
+                    cargo,
+                    package=package,
+                    kind=kind,
+                    extra_filter=str(extra_filter) if extra_filter else None,
+                )
                 return argv, ["build"], cwd, env, effective_timeout
             if operation == "cargo-codegen":
                 argv = [cargo, "run", "--locked", *XTASK_PROFILE_ARGS, "-p", "xtask", "--", "generate"]
@@ -3506,7 +3538,13 @@ class OperationRegistry:
                 raise ConductorError("cargo is unavailable; install the pinned Rust toolchain from rust/rust-toolchain.toml")
             cwd = self.repo_root / "rust"
             env = self._cargo_env(env)
-            argv = [cargo, "test", "--workspace", "--locked", "--target", CARGO_TARGET]
+            extra_filter = args.get("filter")
+            argv = cargo_test_argv(
+                cargo,
+                package="all",
+                kind=str(args.get("kind") or "lib"),
+                extra_filter=str(extra_filter) if extra_filter else None,
+            )
             return argv, ["build"], cwd, env, effective_timeout
         if operation == "install-debug-cli":
             return [script("install_debug_cli.sh"), "install", "--build"], ["build", "debugArtifact"], cwd, env, effective_timeout
@@ -8789,8 +8827,14 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parser.add_argument(
             "--package", choices=[*sorted(CARGO_PACKAGE_NAMES), "all"], default="all"
         )
+        parser.add_argument("--kind", choices=list(CARGO_TEST_KINDS), default="lib")
+        parser.add_argument("--filter")
         ns = parser.parse_args(rest)
         args["package"] = ns.package
+        if ns.kind != "lib":
+            args["kind"] = ns.kind
+        if ns.filter:
+            args["filter"] = ns.filter
     elif operation == "cargo-codegen":
         parser = argparse.ArgumentParser(prog="conductor cargo-codegen")
         parser.add_argument("--check", action="store_true")

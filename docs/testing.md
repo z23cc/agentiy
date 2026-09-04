@@ -1,6 +1,8 @@
 # Testing Agentry
 
-Use this guide for contributor-facing XCTest changes. Follow `AGENTS.md` for coordinated daemon use, style checks, and lifecycle approvals. Use `$rpce-test-quality` when deciding whether coverage is worth adding, retaining, consolidating, or removing.
+Use this guide for contributor-facing test changes. Follow `AGENTS.md` for coordinated daemon use, style checks, and lifecycle approvals. Use `$rpce-test-quality` when deciding whether coverage is worth adding, retaining, consolidating, or removing.
+
+The default executable suite is Rust unit tests (`cargo test --lib`). Swift XCTest trees were removed. Integration, process, and proptest suites stay in-tree behind `CARGO_TEST_KIND=full`. Hosted CI is a Linux secret scan; per-change gates are local `preflight.sh`.
 
 ## Quality gate before adding a test
 
@@ -15,39 +17,30 @@ Search existing direct and outcome-level coverage first. Prefer a test that fail
 
 ## Choose the lowest faithful layer
 
-- **Isolated core:** deterministic decisions, transformations, parsers, state machines, policy, invariants, and failure semantics.
-- **Provider package:** provider protocol, codec, translation, launch arguments, and model mapping under `Packages/RepoPromptAgentProviders/Tests`.
-- **Root SwiftPM:** module behavior without a GUI, including actors, persistence, fixtures, subprocess adapters, in-process MCP, and deterministic concurrency under `Tests/RepoPromptTests`.
+- **Isolated core:** deterministic decisions, transformations, parsers, state machines, policy, invariants, and failure semantics in `rust/crates/*/src` unit tests.
+- **Crate integration:** proto/session-log/ffi fixture tests and runtime process/proptest suites under `rust/crates/*/tests`. Default `make dev-test` does not run these; use `CARGO_TEST_KIND=full`.
 - **Runtime diagnostics:** assembled-app-only rendering, restoration, routing instrumentation, churn, or resource investigations. Require a bounded scenario, privacy-safe machine-readable evidence, entry point, and cleanup path.
 - **Live/packaged smoke:** real app/MCP wiring, bundle layout, embedded helpers, ownership, signing, provenance, and a few critical journeys.
 - **Structural guard:** last resort when executable behavior, compiler boundaries, lint, or guardrails cannot cheaply enforce a narrow constraint.
 
 Do not use smoke as the only protection for deterministic logic. Without a predeclared acceptance threshold, a benchmark is diagnostics rather than executable contract coverage.
 
-## Add and run root or provider XCTest coverage
+## Add and run Rust coverage
 
-- **Root target:** place app-integrated and root-package tests under `Tests/RepoPromptTests` and validate with `make dev-test`.
-- **Provider target:** place provider protocol, codec, translation, launch-argument, or model-mapping tests under `Packages/RepoPromptAgentProviders/Tests/RepoPromptClaudeCompatibleProviderTests` and validate with `make dev-provider-test`.
-- Keep one coherent contract per method. Labeled tables are appropriate when cases differ only by input, boundary, or expected outcome.
-- Control time, randomness, locale, environment, resources, ordering, and concurrency. Prefer gates, clocks, or continuations over sleeps, and verify meaningful cleanup or ownership.
+- **Unit tests:** `#[cfg(test)]` modules next to the code under `rust/crates/*/src`. Default `make dev-test` / `make dev-cargo-test` runs `--lib` only.
+- **Integration tests:** `rust/crates/*/tests`. Keep process coexistence, proptest, and measurement harnesses here so the default loop stays cheap. Run with `make dev-test CARGO_TEST_KIND=full`.
+- Keep one coherent contract per test. Labeled tables are appropriate when cases differ only by input, boundary, or expected outcome.
 
 Focused daemon-coordinated examples:
 
 ```bash
-make dev-test FILTER=RepoPromptTests.ExampleTests
-make dev-test FILTER=RepoPromptTests.ExampleTests/testBehavior
-make dev-provider-test FILTER=RepoPromptClaudeCompatibleProviderTests.ExampleTests
-make dev-provider-test FILTER=RepoPromptClaudeCompatibleProviderTests.ExampleTests/testBehavior
-```
-
-Use the narrowest relevant filter while iterating. Broaden to the affected target or full suite when the change crosses shared infrastructure, package boundaries, generated surfaces, test harness behavior, or many unrelated suites:
-
-```bash
 make dev-test
-make dev-provider-test
+make dev-test FILTER=workspace_persistence
+make dev-cargo-test CARGO_PACKAGE=runtime
+make dev-test CARGO_TEST_KIND=full
 ```
 
-A focused green run is evidence for the named contract, not a substitute for full-suite or CI coverage when the changed boundary is broad. Hosted macOS app tests are `workflow_dispatch` only and run as a single XCTest process; they are not a contributor-maintained registry. The per-change gate is local `preflight.sh pr-ready`.
+A focused green `--lib` run is evidence for unit contracts. Use `CARGO_TEST_KIND=full` when the change touches process supervision, inventory-scope concurrency, or proto/session-log fixture tests. Hosted CI does not run cargo tests. The per-change gate is local `preflight.sh pr-ready`.
 
 ## Codemap-sensitive changes
 
@@ -56,8 +49,8 @@ Routine pipeline and integration tests should not await real codemap generation 
 Use the retained deterministic CodeMap tests for local coverage:
 
 ```bash
-make dev-test FILTER=CodeMapGoldenTests
-make dev-test FILTER=CodeMapArtifactContainerTests
+make dev-cargo-test CARGO_PACKAGE=runtime FILTER=codemap
+make dev-test CARGO_TEST_KIND=full FILTER=codemap
 ```
 
 Run these when changes touch CodeMap generation, syntax parsing, artifact storage, or Tree-sitter support. The packaged-app live codemap projection-demand gate is documented later in this guide.
@@ -66,20 +59,12 @@ Context Builder inactive-target coverage must stay within one `MCPDomainRuntime`
 
 ## Scale-sensitive contract gates
 
-Routine root tests should use lower-cost boundary variants when they still exercise the same spill, merge, streaming, or retained-reader path. High-cardinality contracts remain explicit opt-ins:
+Scale and measurement harnesses live in `rust/crates/runtime/tests` and env-gated unit probes. They are not part of default `--lib`. Run them explicitly:
 
 ```bash
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.FileSystemAcceptedIngressBarrierTests/testSyntheticHundredThousandPathReplayWhenEnabled
+make dev-test CARGO_TEST_KIND=full FILTER=search_measurement
+RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK=1 make dev-cargo-test CARGO_PACKAGE=runtime FILTER=td4
 ```
-
-Swift/Rust migration differentials for domains without a production caller (PathMatch scoring/resolve, token accounting) are skipped unless:
-
-```bash
-RPCE_RUN_MIGRATION_DIFFERENTIALS=1 swift test --filter PathMatchRustSwiftDifferentialTests
-RPCE_RUN_MIGRATION_DIFFERENTIALS=1 swift test --filter TokenAccountingRustSwiftDifferentialTests
-```
-
-Use direct `swift test` only for these explicit environment-gated scale and differential checks so the gate reaches the XCTest process. Prefer `make dev-test` for lower-cost routine variants and ordinary focused validation.
 
 ## Performance and optimization evidence
 
@@ -800,16 +785,17 @@ valid samples.
 
 ### 100k synthetic hooks
 
-High-cardinality filesystem ingress replay remains an explicit opt-in, separate
-from ordinary root-suite timing:
+High-cardinality filesystem ingress replay is no longer an XCTest hook. Use the
+Rust inventory-scope / search measurement harnesses when that contract is in
+scope:
 
 ```bash
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.FileSystemAcceptedIngressBarrierTests/testSyntheticHundredThousandPathReplayWhenEnabled
+make dev-test CARGO_TEST_KIND=full FILTER=inventory_scope
 ```
 
-This hook validates spill/streaming scale, not live Agent Mode latency. The
-live 100k/1M workspace campaign still needs the route, resource, correctness,
-and teardown thresholds above.
+This validates spill/streaming scale, not live Agent Mode latency. The live
+100k/1M workspace campaign still needs the route, resource, correctness, and
+teardown thresholds above.
 
 Script-only validation, with no app or CLI calls:
 

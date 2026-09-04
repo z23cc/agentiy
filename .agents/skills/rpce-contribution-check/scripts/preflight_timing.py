@@ -26,18 +26,11 @@ PHASE_IDS = [
     "outgoing_range_secret_scan",
     "path_selection",
     "conductor_selftests",
-    "ci_app_test_runner_selftests",
     "swift_lint",
-    "root_tests",
-    "provider_tests",
-    "repoprompt_build",
-    "mcp_build",
     "xcode_generator_tests",
-    "xcode_workspace_validation",
     "rust_tests",
     "rust_codegen_check",
     "rust_deny",
-    "rust_audit",
 ]
 LANE_IDS = PHASE_IDS[7:]
 SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
