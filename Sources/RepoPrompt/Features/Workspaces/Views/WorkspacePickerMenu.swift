@@ -86,6 +86,16 @@ struct WorkspacePickerMenu<Label: View>: View {
 
     private var menuContent: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let issue = workspaceManager.domainWorkspaceAuthorityIssue {
+                Text(issue.message)
+                    .font(fontPreset.captionFont)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, rowHorizontalPadding)
+                    .padding(.bottom, dividerPadding)
+                divider
+            }
+
             workspaceList
 
             divider

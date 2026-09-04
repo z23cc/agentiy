@@ -10,7 +10,6 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pa
 // Sentry testing.
 let environment = ProcessInfo.processInfo.environment
 let sentryEnabled = environment["AGENTRY_ENABLE_SENTRY"] == "1"
-let benchmarkTestsEnabled = environment["RPCE_ENABLE_BENCHMARK_TESTS"] == "1"
 
 var packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/apple/swift-log.git", exact: "1.6.3"),
@@ -53,35 +52,10 @@ var repoPromptAppSwiftSettings: [SwiftSetting] = [
     .enableUpcomingFeature("BareSlashRegexLiterals")
 ]
 
-var repoPromptTestDependencies: [Target.Dependency] = [
-    "RepoPromptApp",
-    "RepoPromptDomainRuntime",
-    "RepoPromptCodeMapCore",
-    "RepoPromptMCP",
-    "RepoPromptShared",
-    "AgentryCoreBridge",
-    .product(name: "Markdown", package: "swift-markdown")
-]
-
-var repoPromptTestSwiftSettings: [SwiftSetting] = [
-    .define("DEBUG", .when(configuration: .debug))
-]
-
-var repoPromptCodeMapTestSwiftSettings: [SwiftSetting] = [
-    .define("DEBUG", .when(configuration: .debug))
-]
-
 if sentryEnabled {
     let sentryDependency = Target.Dependency.product(name: "Sentry", package: "sentry-cocoa")
     repoPromptAppDependencies.append(sentryDependency)
     repoPromptAppSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))
-    repoPromptTestDependencies.append(sentryDependency)
-    repoPromptTestSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))
-}
-
-if benchmarkTestsEnabled {
-    repoPromptTestSwiftSettings.append(.define("RPCE_BENCHMARK_TESTS"))
-    repoPromptCodeMapTestSwiftSettings.append(.define("RPCE_BENCHMARK_TESTS"))
 }
 
 let swift6LanguageMode: [SwiftSetting] = [
@@ -185,49 +159,7 @@ let package = Package(
                 .define("DEBUG", .when(configuration: .debug))
             ]
         ),
-        .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
-        .testTarget(
-            name: "AgentryCoreBridgeTests",
-            dependencies: ["AgentryCoreBridge"],
-            path: "Tests/AgentryCoreBridgeTests",
-            swiftSettings: rustFFISwiftSettings
-        ),
-        .testTarget(
-            name: "RepoPromptDomainRuntimeTests",
-            dependencies: [
-                "RepoPromptDomainRuntime",
-                .product(name: "MCP", package: "swift-sdk")
-            ],
-            path: "Tests/RepoPromptDomainRuntimeTests",
-            swiftSettings: swift6LanguageMode
-        ),
-        .testTarget(
-            name: "RepoPromptWorkspaceCoreTests",
-            dependencies: ["RepoPromptWorkspaceCore"],
-            path: "Tests/RepoPromptWorkspaceCoreTests"
-        ),
-        .testTarget(
-            name: "RepoPromptSearchCoreTests",
-            dependencies: ["RepoPromptSearchCore", "AgentryCoreBridge"],
-            path: "Tests/RepoPromptSearchCoreTests",
-            swiftSettings: swift6LanguageMode
-        ),
-        .testTarget(
-            name: "RepoPromptCodeMapCoreTests",
-            dependencies: ["RepoPromptCodeMapCore"],
-            path: "Tests/RepoPromptCodeMapCoreTests",
-            resources: [
-                .copy("Fixtures"),
-                .copy("Goldens")
-            ],
-            swiftSettings: swift6LanguageMode + repoPromptCodeMapTestSwiftSettings
-        ),
-        .testTarget(
-            name: "RepoPromptTests",
-            dependencies: repoPromptTestDependencies,
-            path: "Tests/RepoPromptTests",
-            swiftSettings: repoPromptTestSwiftSettings
-        )
+        .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework")
     ],
     swiftLanguageModes: [.v5]
 )

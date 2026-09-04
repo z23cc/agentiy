@@ -2,6 +2,7 @@ import Cocoa
 import Combine
 import Darwin
 import Logging
+import RepoPromptDomainRuntime
 import Sparkle
 import SwiftUI
 
@@ -185,6 +186,7 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         // any connection can report a complete catalog. Readiness is observation-only.
         startGlobalMCPServiceRegistration()
         if !launchConfiguration.suppressesNonessentialLaunchSideEffects {
+            pruneOrphanWorkspaceShellsOnLaunch()
             // Request notification authorization
             Task {
                 await NotificationService.shared.requestAuthorization()
@@ -215,6 +217,27 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
                 CLISymlinkManagerUserSpace.ensureLocalSymlink()
             }
         #endif
+    }
+
+    private func pruneOrphanWorkspaceShellsOnLaunch() {
+        var roots = [WorkspaceOrphanShellPruner.defaultWorkspacesRoot()]
+        if let customPath = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL"),
+           !customPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            let customRoot = URL(fileURLWithPath: customPath, isDirectory: true)
+            if customRoot.standardizedFileURL != roots[0].standardizedFileURL {
+                roots.append(customRoot)
+            }
+        }
+        Task.detached(priority: .utility) {
+            var removed = 0
+            for root in roots {
+                removed += WorkspaceOrphanShellPruner.prune(workspacesRoot: root).removed.count
+            }
+            if removed > 0 {
+                appDelegateLog.info("Removed \(removed) leftover unsaved workspace directories.")
+            }
+        }
     }
 
     // MARK: - Application Lifecycle

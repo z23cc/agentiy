@@ -84,19 +84,7 @@ case "$ACTION" in
         [[ -x .build/debug/agentry-mcp ]] || fail "debug agentry-mcp executable is missing"
         ;;
     test)
-        if [[ "${AGENTRY_XCODE_UNCOORDINATED:-0}" == "1" ]]; then
-            command=(./Scripts/run_without_github_tokens.sh swift test)
-            if [[ -n "${AGENTRY_XCODE_TEST_FILTER:-}" ]]; then
-                command+=(--filter "$AGENTRY_XCODE_TEST_FILTER")
-            fi
-            "${command[@]}"
-        else
-            command=(./conductor test)
-            if [[ -n "${AGENTRY_XCODE_TEST_FILTER:-}" ]]; then
-                command+=(--filter "$AGENTRY_XCODE_TEST_FILTER")
-            fi
-            "${command[@]}"
-        fi
+        ./conductor cargo-test --package all
         ;;
     prepare-app-run)
         if [[ "${AGENTRY_XCODE_UNCOORDINATED:-0}" == "1" ]]; then

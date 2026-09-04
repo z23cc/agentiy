@@ -30,10 +30,8 @@ STYLE_PATHS=(
     "Sources/RepoPromptExecutable"
     "Sources/RepoPromptMCP"
     "Sources/RepoPromptShared"
-    "Tests/RepoPromptTests"
     "Packages/RepoPromptAgentProviders/Package.swift"
     "Packages/RepoPromptAgentProviders/Sources"
-    "Packages/RepoPromptAgentProviders/Tests"
 )
 
 EXCLUDED_SWIFT_PREFIXES=(

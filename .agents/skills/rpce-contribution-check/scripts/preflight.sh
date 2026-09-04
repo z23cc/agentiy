@@ -220,13 +220,13 @@ run_pr_ready_path_validations() {
   local control_plane_paths_pattern='^(Scripts/conductor\.py|Scripts/conductor_diagnostics\.py|Scripts/guardrails\.sh|Scripts/test_conductor_(lifecycle|output|diagnostics|high_output)\.py|Scripts/test_contribution_preflight\.py|\.agents/skills/rpce-contribution-check/scripts/preflight(_timing\.py|\.sh)|Makefile)$'
   local ci_app_test_runner_paths_pattern='^(Scripts/ci_app_test_runner\.py|Scripts/test_ci_app_test_runner\.py|\.github/workflows/ci\.yml)$'
   local swift_paths_pattern='\.swift$'
-  local root_test_paths_pattern='^(Sources/RepoPrompt/|Tests/RepoPrompt[^/]*Tests/)'
+  local root_test_paths_pattern='^Sources/RepoPrompt/'
   local provider_package_paths_pattern='^Packages/RepoPromptAgentProviders/'
   local repoprompt_product_paths_pattern='^Sources/RepoPrompt/'
   local mcp_product_paths_pattern='^(Sources/RepoPromptMCP/|Sources/RepoPromptShared/)'
   local xcode_full_validation_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|\.github/workflows/xcode-workspace\.yml)$'
   local xcode_generator_test_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|Scripts/test_xcode_workspace_generator\.py|\.github/workflows/xcode-workspace\.yml)$'
-  local rust_validation_paths_pattern='^(rust/|Sources/AgentryUniFFIRaw/Generated/|Sources/CAgentryRustCore/|Sources/AgentryCoreBridge/|Tests/AgentryCoreBridgeTests/)'
+  local rust_validation_paths_pattern='^(rust/|Sources/AgentryUniFFIRaw/Generated/|Sources/CAgentryRustCore/|Sources/AgentryCoreBridge/)'
 
   local has_control_plane_changes=0
   local has_ci_app_test_runner_changes=0

@@ -638,11 +638,7 @@ class ContributionPreflightTests(unittest.TestCase):
                 "Sources/AgentryCoreBridge/CoreBridge.swift",
                 [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
             ),
-            (
-                "Swift bridge tests",
-                "Tests/AgentryCoreBridgeTests/CoreBridgeTests.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
-            ),
+
         ]
 
         for name, outgoing_path, expected_make_lines in cases:
@@ -662,16 +658,7 @@ class ContributionPreflightTests(unittest.TestCase):
                 "Packages/RepoPromptAgentProviders/Sources/Example.swift",
                 [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, PROVIDER_TEST_TARGET],
             ),
-            (
-                "root test Swift path",
-                "Tests/RepoPromptTests/ExampleTests.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, ROOT_TEST_TARGET],
-            ),
-            (
-                "split root test Swift path",
-                "Tests/RepoPromptWorkspaceTests/ExampleTests.swift",
-                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, ROOT_TEST_TARGET],
-            ),
+
             (
                 "MCP Swift path",
                 "Sources/RepoPromptMCP/Example.swift",
@@ -767,8 +754,6 @@ class NativeSourceGuardrailTests(unittest.TestCase):
             allowed_paths = (
                 "Sources/CAgentryRustCore/shim.c",
                 "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
-                "Tests/RepoPromptCodeMapCoreTests/Fixtures/c/guardrail_fixture.c",
-                "Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp/guardrail_fixture.mm",
                 "ThirdPartyLicenses/guardrail_fixture.c",
                 "Vendor/guardrail_fixture.mm",
             )
@@ -803,7 +788,7 @@ class NativeSourceGuardrailTests(unittest.TestCase):
             (native_target_dir / "fixture.c").write_text("void guardrail_fixture(void) {}\n", encoding="utf-8")
             package_path = fixture / "Package.swift"
             package_text = package_path.read_text(encoding="utf-8")
-            insertion_point = "        .testTarget(\n            name: \"RepoPromptTests\","
+            insertion_point = "        .binaryTarget(name: \"Sparkle\", path: \"Vendor/Sparkle/Sparkle.xcframework\")"
             self.assertIn(insertion_point, package_text)
             package_path.write_text(
                 package_text.replace(

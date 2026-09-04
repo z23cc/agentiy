@@ -4369,6 +4369,10 @@ class WorkspaceManagerViewModel: ObservableObject {
         Self.logger.error("Domain workspace authority \(operation, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
     }
 
+    func dismissDomainWorkspaceAuthorityIssue() {
+        publishDomainAuthorityIssueIfChanged(nil)
+    }
+
     func refreshDomainWorkspaceAuthority() async {
         guard let domainWorkspaceAuthorityClient else { return }
         let snapshot = await domainWorkspaceAuthorityClient.reloadExternalChanges()

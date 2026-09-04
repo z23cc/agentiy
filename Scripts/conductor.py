@@ -31,6 +31,7 @@ import socketserver
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -3220,6 +3221,7 @@ class OperationRegistry:
         "HOMEBREW_CACHE",
     ]
     TEST_ENV_KEYS = [
+        "AGENTRY_APPLICATION_SUPPORT_ROOT",
         "RPCE_ENABLE_BENCHMARK_TESTS",
         "RPCE_RUN_CODEMAP_E2E",
         "RPCE_RUN_SCALE_TESTS",
@@ -3312,15 +3314,6 @@ class OperationRegistry:
             return self._prepare_sleep(operation, args, timeout, request)
         if operation not in IMPLEMENTED_OPERATIONS:
             raise ConductorError(f"operation '{operation}' is not implemented")
-
-        if operation in {"test", "provider-test"}:
-            self._validate_xctest_stall_options(args)
-            configuration = str(args.get("configuration") or "debug")
-            sanitizer = str(args.get("sanitize") or "none")
-            if configuration not in {"debug", "release"}:
-                raise ConductorError("test configuration must be debug or release")
-            if sanitizer not in {"none", "thread"}:
-                raise ConductorError("test sanitizer must be none or thread")
 
         env = self._base_env(verbose, request)
         effective_timeout = self._default_timeout(operation, args)
@@ -3507,36 +3500,14 @@ class OperationRegistry:
             env = self._cargo_env(env)
             command = [script("package_app.sh"), config]
             return self._rust_archive_then_command(command, config), lanes, cwd, env, effective_timeout
-        if operation == "test":
-            configuration = str(args.get("configuration") or "debug")
-            sanitizer = str(args.get("sanitize") or "none")
-            argv = ["swift", "test"]
-            if configuration == "release":
-                argv.extend(["--configuration", "release"])
-            if sanitizer == "thread":
-                argv.extend(["--sanitize", "thread"])
-            if args.get("testProduct"):
-                argv.extend(["--test-product", str(args["testProduct"])])
-            if args.get("filter"):
-                argv.extend(["--filter", str(args["filter"])])
+        if operation in {"test", "provider-test"}:
+            cargo = shutil.which("cargo")
+            if cargo is None:
+                raise ConductorError("cargo is unavailable; install the pinned Rust toolchain from rust/rust-toolchain.toml")
+            cwd = self.repo_root / "rust"
             env = self._cargo_env(env)
-            # `swift test` block-buffers on a pipe and flushes only at exit, so a hung run emits
-            # no `Test Case ... started` markers and the stall watchdog can never arm. A pty makes
-            # it line-buffer. Safe here because this path discards both returned streams.
-            return (
-                self._rust_archive_then_command(argv, configuration, stream_pty=True),
-                ["build"],
-                cwd,
-                env,
-                effective_timeout,
-            )
-        if operation == "provider-test":
-            argv = ["swift", "test"]
-            if args.get("testProduct"):
-                argv.extend(["--test-product", str(args["testProduct"])])
-            if args.get("filter"):
-                argv.extend(["--filter", str(args["filter"])])
-            return argv, ["build"], self.repo_root / "Packages" / "RepoPromptAgentProviders", env, effective_timeout
+            argv = [cargo, "test", "--workspace", "--locked", "--target", CARGO_TARGET]
+            return argv, ["build"], cwd, env, effective_timeout
         if operation == "install-debug-cli":
             return [script("install_debug_cli.sh"), "install", "--build"], ["build", "debugArtifact"], cwd, env, effective_timeout
         if operation == "debug-cli-status":
@@ -3650,6 +3621,15 @@ class OperationRegistry:
         controlled["CARGO_BUILD_TARGET"] = CARGO_TARGET
         controlled["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
         controlled["CARGO_INCREMENTAL"] = "0"
+        return controlled
+
+    def _ensure_test_application_support_root(self, env: Dict[str, str]) -> Dict[str, str]:
+        key = "AGENTRY_APPLICATION_SUPPORT_ROOT"
+        current = str(env.get(key, "")).strip()
+        if current:
+            return env
+        controlled = dict(env)
+        controlled[key] = tempfile.mkdtemp(prefix="agentry-test-support.")
         return controlled
 
     def _rust_archive_then_command(

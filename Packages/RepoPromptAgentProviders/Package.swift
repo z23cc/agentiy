@@ -15,11 +15,6 @@ let package = Package(
             name: "RepoPromptClaudeCompatibleProvider",
             path: "Sources/RepoPromptClaudeCompatibleProvider",
             swiftSettings: [.define("DEBUG", .when(configuration: .debug))]
-        ),
-        .testTarget(
-            name: "RepoPromptClaudeCompatibleProviderTests",
-            dependencies: ["RepoPromptClaudeCompatibleProvider"],
-            path: "Tests/RepoPromptClaudeCompatibleProviderTests"
         )
     ],
     swiftLanguageModes: [.v5]

@@ -4044,16 +4044,9 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             }
         )
 
-        self.assertIn("__operation_runner", root_argv)
-        wrapper = json.loads(root_argv[-1])
-        self.assertEqual(wrapper["kind"], "rust_archive_then_command")
-        self.assertEqual(wrapper["args"]["profile"], "debug")
-        self.assertEqual(
-            wrapper["args"]["command"],
-            ["swift", "test", "--test-product", "RepoPromptWorkspaceTests", "--filter", "WorkspaceTests"],
-        )
+        self.assertEqual(root_argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
         self.assertEqual(root_lanes, ["build"])
-        self.assertEqual(root_cwd, state.paths.repo_root)
+        self.assertEqual(root_cwd, state.paths.repo_root / "rust")
 
     def test_test_cli_forwards_release_configuration_and_thread_sanitizer(self) -> None:
         tmp, state = self.make_state()
@@ -4084,26 +4077,9 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         root_argv, root_lanes, root_cwd, _env, _timeout = registry.prepare(
             {"operation": "test", "args": expected}
         )
-        wrapper = json.loads(root_argv[-1])
-        self.assertEqual(wrapper["kind"], "rust_archive_then_command")
-        self.assertEqual(wrapper["args"]["profile"], "release")
-        self.assertEqual(
-            wrapper["args"]["command"],
-            [
-                "swift",
-                "test",
-                "--configuration",
-                "release",
-                "--sanitize",
-                "thread",
-                "--test-product",
-                "AgentryCoreBridgeTests",
-                "--filter",
-                "AgentryCoreBridge",
-            ],
-        )
+        self.assertEqual(root_argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
         self.assertEqual(root_lanes, ["build"])
-        self.assertEqual(root_cwd, state.paths.repo_root)
+        self.assertEqual(root_cwd, state.paths.repo_root / "rust")
 
     def test_codex_packaging_environment_survives_client_snapshot_and_build_prepare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4217,6 +4193,43 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertEqual(env["RP_SWIFT_CODEMAP_REFERENCE_MODE"], "compare")
         self.assertEqual(env["RP_SWIFT_CODEMAP_REFERENCE_PATH"], "/tmp/reference.json")
         self.assertNotIn("RPCE_UNRELATED_TEST_GATE", env)
+
+    def test_application_support_root_survives_client_snapshot_and_test_prepare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = conductor.OperationRegistry(Path(tmp))
+            with mock.patch.dict(
+                os.environ,
+                {"AGENTRY_APPLICATION_SUPPORT_ROOT": "/tmp/explicit-agentry-support"},
+                clear=False,
+            ):
+                snapshot = conductor.OperationRegistry.client_env_snapshot()
+
+            self.assertEqual(snapshot["AGENTRY_APPLICATION_SUPPORT_ROOT"], "/tmp/explicit-agentry-support")
+            _argv, _lanes, _cwd, env, _timeout = registry.prepare(
+                {
+                    "operation": "test",
+                    "args": {},
+                    "env": snapshot,
+                }
+            )
+
+        self.assertEqual(env["AGENTRY_APPLICATION_SUPPORT_ROOT"], "/tmp/explicit-agentry-support")
+
+    def test_test_prepare_runs_cargo_workspace_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = conductor.OperationRegistry(Path(tmp))
+            argv, lanes, cwd, env, _timeout = registry.prepare(
+                {
+                    "operation": "test",
+                    "args": {},
+                    "env": {},
+                }
+            )
+
+        self.assertEqual(argv[1:], ["test", "--workspace", "--locked", "--target", conductor.CARGO_TARGET])
+        self.assertEqual(lanes, ["build"])
+        self.assertEqual(cwd, Path(tmp) / "rust")
+        self.assertNotIn("AGENTRY_APPLICATION_SUPPORT_ROOT", env)
 
     def test_test_cli_forwards_watchdog_options_and_requires_threshold(self) -> None:
         tmp, state = self.make_state()

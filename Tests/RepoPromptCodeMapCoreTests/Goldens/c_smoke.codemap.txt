@@ -1,8 +1,0 @@
-File: <ROOT>/c/smoke.c
-Imports:
-  - #include <stddef.h>
----
-
-Functions:
-  - L3: int add(int lhs, int rhs)
----

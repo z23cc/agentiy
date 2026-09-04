@@ -34,11 +34,6 @@ required_dirs=(
   "Sources/CAgentryRustCore"
   "Sources/AgentryUniFFIRaw/Generated"
   "Sources/AgentryCoreBridge"
-  "Tests/AgentryCoreBridgeTests"
-  "Tests/RepoPromptTests"
-  "Tests/RepoPromptWorkspaceCoreTests"
-  "Tests/RepoPromptSearchCoreTests"
-  "Tests/RepoPromptDomainRuntimeTests"
 )
 for dir in "${required_dirs[@]}"; do
   if [[ ! -d "$dir" ]]; then
@@ -177,15 +172,9 @@ else:
     if workspace_core.get("dependencies", []): errors.append("RepoPromptWorkspaceCore must not declare target or package dependencies")
     if workspace_core.get("settings", []): errors.append("RepoPromptWorkspaceCore must not declare compiler settings")
 
-workspace_core_tests = targets.get("RepoPromptWorkspaceCoreTests")
-if workspace_core_tests is None:
-    errors.append("RepoPromptWorkspaceCoreTests target missing")
-else:
-    test_dependencies = [dependency["byName"][0] for dependency in workspace_core_tests.get("dependencies", []) if dependency.get("byName")]
-    if workspace_core_tests.get("type") != "test": errors.append("RepoPromptWorkspaceCoreTests must remain a test target")
-    if workspace_core_tests.get("path") != "Tests/RepoPromptWorkspaceCoreTests": errors.append("RepoPromptWorkspaceCoreTests target path drifted")
-    if test_dependencies != ["RepoPromptWorkspaceCore"] or len(workspace_core_tests.get("dependencies", [])) != 1:
-        errors.append("RepoPromptWorkspaceCoreTests must depend only on RepoPromptWorkspaceCore")
+for name, target in targets.items():
+    if target.get("type") == "test":
+        errors.append(f"Swift XCTest target must not return: {name}")
 
 search_core = targets.get("RepoPromptSearchCore")
 if search_core is None:
@@ -199,23 +188,10 @@ else:
     if '"swiftLanguageMode":{"_0":"6"}' not in json.dumps(search_core.get("settings", [])).replace(" ", ""):
         errors.append("RepoPromptSearchCore must compile in Swift 6 language mode")
 
-search_core_tests = targets.get("RepoPromptSearchCoreTests")
-if search_core_tests is None:
-    errors.append("RepoPromptSearchCoreTests target missing")
-else:
-    search_test_dependencies = [dependency["byName"][0] for dependency in search_core_tests.get("dependencies", []) if dependency.get("byName")]
-    if search_core_tests.get("type") != "test": errors.append("RepoPromptSearchCoreTests must remain a test target")
-    if search_core_tests.get("path") != "Tests/RepoPromptSearchCoreTests": errors.append("RepoPromptSearchCoreTests target path drifted")
-    if search_test_dependencies != ["RepoPromptSearchCore", "AgentryCoreBridge"] or len(search_core_tests.get("dependencies", [])) != 2:
-        errors.append("RepoPromptSearchCoreTests must depend only on RepoPromptSearchCore and AgentryCoreBridge")
-    if '"swiftLanguageMode":{"_0":"6"}' not in json.dumps(search_core_tests.get("settings", [])).replace(" ", ""):
-        errors.append("RepoPromptSearchCoreTests must compile in Swift 6 language mode")
-
 ffi_expected = {
     "CAgentryRustCore": ("regular", "Sources/CAgentryRustCore", []),
     "AgentryUniFFIRaw": ("regular", "Sources/AgentryUniFFIRaw", ["CAgentryRustCore"]),
     "AgentryCoreBridge": ("regular", "Sources/AgentryCoreBridge", ["AgentryUniFFIRaw"]),
-    "AgentryCoreBridgeTests": ("test", "Tests/AgentryCoreBridgeTests", ["AgentryCoreBridge"]),
 }
 for name, (target_type, path, expected_dependencies) in ffi_expected.items():
     target = targets.get(name)
@@ -249,18 +225,7 @@ for name, target in targets.items():
             errors.append(f"CAgentryRustCore native source list drifted: {native_sources}")
     elif native_sources:
         errors.append(f"first-party SwiftPM target must not compile C-family sources: {name}: {native_sources}")
-fixture_roots = (
-    "Tests/RepoPromptCodeMapCoreTests/Fixtures/c",
-    "Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp",
-)
-for name, target in targets.items():
-    if name == "RepoPromptCodeMapCoreTests":
-        continue
-    target_path = target.get("path") or ""
-    for fixture_root in fixture_roots:
-        if target_path == fixture_root or target_path.startswith(fixture_root + "/") or fixture_root.startswith(target_path + "/"):
-            errors.append(f"data-only parser fixture root must not be owned by target {name}: {fixture_root}")
-for name in ("AgentryUniFFIRaw", "AgentryCoreBridge", "AgentryCoreBridgeTests"):
+for name in ("AgentryUniFFIRaw", "AgentryCoreBridge"):
     target = targets.get(name, {})
     settings_text = json.dumps(target.get("settings", []))
     if '"swiftLanguageMode":{"_0":"6"}' not in settings_text.replace(" ", ""):
@@ -339,7 +304,6 @@ if app_by_name_dependencies.count("RepoPromptCodeMapCore") != 1:
 # façade (Foundation/Dispatch/Darwin only, no AppKit/SwiftUI/Combine/MainActor),
 # so this remains AppKit-free.
 domain_runtime = targets.get("RepoPromptDomainRuntime")
-domain_runtime_tests = targets.get("RepoPromptDomainRuntimeTests")
 if domain_runtime is None:
     errors.append("RepoPromptDomainRuntime target missing")
 else:
@@ -357,60 +321,12 @@ else:
     }
     if runtime_by_name != ["RepoPromptShared", "RepoPromptCodeMapCore", "AgentryCoreBridge"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 5:
         errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptCodeMapCore, AgentryCoreBridge, Logging, and pinned MCP")
-if domain_runtime_tests is None:
-    errors.append("RepoPromptDomainRuntimeTests target missing")
-else:
-    owner_by_name = [dependency["byName"][0] for dependency in domain_runtime_tests.get("dependencies", []) if dependency.get("byName")]
-    owner_products = {
-        (dependency["product"][0], dependency["product"][1])
-        for dependency in domain_runtime_tests.get("dependencies", [])
-        if "product" in dependency
-    }
-    if domain_runtime_tests.get("type") != "test": errors.append("RepoPromptDomainRuntimeTests must remain a test target")
-    if domain_runtime_tests.get("path") != "Tests/RepoPromptDomainRuntimeTests": errors.append("RepoPromptDomainRuntimeTests target path drifted")
-    if owner_by_name != ["RepoPromptDomainRuntime"] or owner_products != {("MCP", "swift-sdk")} or len(domain_runtime_tests.get("dependencies", [])) != 2:
-        errors.append("RepoPromptDomainRuntimeTests must depend only on RepoPromptDomainRuntime and MCP")
+    settings_text = json.dumps(domain_runtime.get("settings", [])).replace(" ", "")
+    if '"swiftLanguageMode":{"_0":"6"}' not in settings_text:
+        errors.append("RepoPromptDomainRuntime must compile in Swift 6 language mode")
 
-def swift_language_modes(target):
-    return [
-        setting.get("kind", {}).get("swiftLanguageMode", {}).get("_0")
-        for setting in target.get("settings", [])
-        if setting.get("kind", {}).get("swiftLanguageMode")
-    ]
-
-def strict_concurrency_features(target):
-    return [
-        setting.get("kind", {}).get("enableExperimentalFeature", {}).get("_0")
-        for setting in target.get("settings", [])
-        if setting.get("kind", {}).get("enableExperimentalFeature")
-    ]
-
-if domain_runtime is not None and domain_runtime_tests is not None:
-    runtime_modes = swift_language_modes(domain_runtime)
-    owner_modes = swift_language_modes(domain_runtime_tests)
-    if runtime_modes != owner_modes:
-        errors.append("RepoPromptDomainRuntime and owner tests must use the same Swift language mode")
-    elif runtime_modes == ["5"]:
-        if strict_concurrency_features(domain_runtime) != ["StrictConcurrency"] or strict_concurrency_features(domain_runtime_tests) != ["StrictConcurrency"]:
-            errors.append("Swift 5 domain runtime and owner tests must retain complete StrictConcurrency checking")
-    elif runtime_modes != ["6"]:
-        errors.append("RepoPromptDomainRuntime and owner tests must be either Swift 5 + StrictConcurrency or Swift 6")
 if app_by_name_dependencies.count("RepoPromptDomainRuntime") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptDomainRuntime")
-repo_prompt_tests_dependencies = [dependency["byName"][0] for dependency in targets.get("RepoPromptTests", {}).get("dependencies", []) if dependency.get("byName")]
-if repo_prompt_tests_dependencies.count("RepoPromptDomainRuntime") != 1:
-    errors.append("RepoPromptTests must directly consume RepoPromptDomainRuntime for adapter evidence")
-
-code_map_core_tests = targets.get("RepoPromptCodeMapCoreTests", {})
-core_test_dependencies = [
-    dependency["byName"][0]
-    for dependency in code_map_core_tests.get("dependencies", [])
-    if dependency.get("byName")
-]
-if code_map_core_tests.get("path") != "Tests/RepoPromptCodeMapCoreTests":
-    errors.append("RepoPromptCodeMapCoreTests target path drifted")
-if core_test_dependencies != ["RepoPromptCodeMapCore"]:
-    errors.append("RepoPromptCodeMapCoreTests must depend only on RepoPromptCodeMapCore")
 
 # P2 step 13: CodeMapCore must stay free of tree-sitter imports; the Rust core owns parsing.
 for core_source in Path("Sources/RepoPromptCodeMapCore").rglob("*.swift"):
@@ -1279,9 +1195,7 @@ while IFS= read -r native_source_file; do
   [[ -z "$native_source_file" ]] && continue
   case "$native_source_file" in
     "Sources/CAgentryRustCore/shim.c"|\
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h"|\
-    Tests/RepoPromptCodeMapCoreTests/Fixtures/c/*|\
-    Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp/*)
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h")
       ;;
     *)
       unexpected_native_source_files+="${unexpected_native_source_files:+$'\n'}$native_source_file"

@@ -51,11 +51,7 @@ LEGACY_PROOF_LINES = {
         'static let localSelfSignedServiceNamePrefix = "com.pvncher.repoprompt.ce.local-self-signed."',
         'static let debugServiceName = "com.pvncher.repoprompt.ce.debug.keychain"',
     ),
-    "Tests/RepoPromptTests/MCP/DirectHeadlessRuntimeConfigurationTests.swift": (
-        '"REPOPROMPT_MCP_HEADLESS_PROFILE": "legacy-profile"',
-        '"REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": legacyProfile.path',
-        '"REPOPROMPT_MCP_WORKING_DIRS": legacyRoot.path',
-    ),
+
     # ADR-0002 narrates the identity-reset ruling itself and must name the
     # retired identity it replaced; this is historical evidence, not a live
     # surface reintroducing it.

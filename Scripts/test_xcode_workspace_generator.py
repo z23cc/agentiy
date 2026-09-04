@@ -95,12 +95,12 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     def test_generated_readme_documents_native_xcode_limitations(self) -> None:
         readme = self.outputs[Path("README.md")].decode()
         self.assertIn("not mutate `Vendor/`", readme)
-        self.assertIn("RepoPromptMCP", readme)
+        self.assertIn("cargo test", readme)
 
     def test_developer_workflow_reads_only_agentry_xcode_environment(self) -> None:
         workflow = (generator.REPO_ROOT / "Scripts/xcode_developer_workflow.sh").read_text()
-        self.assertIn("AGENTRY_XCODE_TEST_FILTER", workflow)
         self.assertIn("AGENTRY_XCODE_UNCOORDINATED", workflow)
+        self.assertIn("cargo-test", workflow)
         self.assertNotIn("REPOPROMPT_XCODE_TEST_FILTER", workflow)
         self.assertNotIn("REPOPROMPT_XCODE_UNCOORDINATED", workflow)
 
@@ -117,11 +117,8 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
 
         self.assertEqual(targets["RepoPromptApp"]["type"], "regular")
         self.assertEqual(targets["RepoPromptApp"]["path"], "Sources/RepoPrompt")
-        self.assertEqual(
-            set(generator._by_name_dependencies(targets["RepoPromptTests"])),
-            {"AgentryCoreBridge", "RepoPromptApp", "RepoPromptCodeMapCore", "RepoPromptDomainRuntime", "RepoPromptMCP", "RepoPromptShared"},
-        )
-        self.assertNotIn("RepoPrompt", generator._by_name_dependencies(targets["RepoPromptTests"]))
+        self.assertNotIn("RepoPromptTests", targets)
+        self.assertFalse(any(target.get("type") == "test" for target in self.manifest["targets"]))
 
         self.assertEqual(targets["RepoPromptDomainRuntime"]["type"], "regular")
         self.assertEqual(targets["RepoPromptDomainRuntime"]["path"], "Sources/RepoPromptDomainRuntime")
@@ -132,23 +129,18 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertNotIn("RepoPromptC", targets)
         for name in ("RepoPromptApp", "RepoPromptDomainRuntime", "RepoPromptMCP"):
             self.assertNotIn("RepoPromptC", generator._by_name_dependencies(targets[name]))
-        self.assertEqual(targets["RepoPromptDomainRuntimeTests"]["type"], "test")
-        self.assertEqual(targets["RepoPromptDomainRuntimeTests"]["path"], "Tests/RepoPromptDomainRuntimeTests")
-        self.assertEqual(
-            generator._by_name_dependencies(targets["RepoPromptDomainRuntimeTests"]),
-            ["RepoPromptDomainRuntime"],
-        )
+        self.assertNotIn("RepoPromptDomainRuntimeTests", targets)
 
     def test_generation_metadata_records_internal_app_target(self) -> None:
         metadata = json.loads(self.outputs[Path("generation.json")])
         self.assertIn("RepoPrompt", metadata["package"]["targets"])
         self.assertIn("RepoPromptApp", metadata["package"]["targets"])
         self.assertIn("RepoPromptDomainRuntime", metadata["package"]["targets"])
-        self.assertIn("RepoPromptDomainRuntimeTests", metadata["package"]["targets"])
+        self.assertNotIn("RepoPromptDomainRuntimeTests", metadata["package"]["targets"])
         self.assertIn("CAgentryRustCore", metadata["package"]["targets"])
         self.assertIn("AgentryUniFFIRaw", metadata["package"]["targets"])
         self.assertIn("AgentryCoreBridge", metadata["package"]["targets"])
-        self.assertIn("AgentryCoreBridgeTests", metadata["package"]["targets"])
+        self.assertNotIn("AgentryCoreBridgeTests", metadata["package"]["targets"])
         self.assertNotIn("RepoPromptC", metadata["package"]["targets"])
 
     def test_generated_outputs_omit_retired_c_target_and_bridging_header(self) -> None:
@@ -182,10 +174,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
             generator._by_name_dependencies(targets["AgentryCoreBridge"]),
             ["AgentryUniFFIRaw"],
         )
-        self.assertEqual(
-            generator._by_name_dependencies(targets["AgentryCoreBridgeTests"]),
-            ["AgentryCoreBridge"],
-        )
+        self.assertNotIn("AgentryCoreBridgeTests", targets)
         products = {target for product in self.manifest["products"] for target in product["targets"]}
         self.assertTrue(
             {"CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge"}.isdisjoint(products)
@@ -286,20 +275,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertNotIn("env", run.call_args.kwargs)
 
     def test_rust_bridge_build_for_testing_is_arm64_non_launching(self) -> None:
-        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(generator.subprocess, "run", return_value=completed) as run:
+        with patch.object(generator.subprocess, "run") as run:
             generator.validate_rust_bridge_build_for_testing(Path("/tmp/generated-xcode"))
-
-        command = run.call_args.args[0]
-        self.assertEqual(command[0], "xcodebuild")
-        self.assertIn("AgentryCoreBridgeTests", command)
-        self.assertIn("platform=macOS,arch=arm64", command)
-        self.assertIn("ARCHS=arm64", command)
-        self.assertIn("ONLY_ACTIVE_ARCH=YES", command)
-        self.assertIn("CODE_SIGNING_ALLOWED=NO", command)
-        self.assertEqual(command[-1], "build-for-testing")
-        self.assertNotIn("test", command)
-        self.assertNotIn("run", command)
+        run.assert_not_called()
 
     def test_check_detects_corruption(self) -> None:
         temporary, destination = self.generate_in_temporary_directory()
@@ -374,16 +352,14 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.GeneratorError, "depend only on 'RepoPromptApp'"):
             generator.validate_manifest(wrong_executable_dependency, generator.REPO_ROOT)
 
-        old_test_dependency = deepcopy(self.manifest)
-        for target in old_test_dependency["targets"]:
-            if target["name"] == "RepoPromptTests":
-                target["dependencies"] = [
-                    {"byName": ["RepoPrompt", None]},
-                    {"byName": ["RepoPromptMCP", None]},
-                    {"byName": ["RepoPromptShared", None]},
-                ]
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptTests must depend"):
-            generator.validate_manifest(old_test_dependency, generator.REPO_ROOT)
+        restored_xctest_target = deepcopy(self.manifest)
+        restored_xctest_target["targets"].append({
+            "name": "RepoPromptTests",
+            "type": "test",
+            "path": "Tests/RepoPromptTests",
+        })
+        with self.assertRaisesRegex(generator.GeneratorError, "Swift XCTest target must not return"):
+            generator.validate_manifest(restored_xctest_target, generator.REPO_ROOT)
 
         restored_c_target = deepcopy(self.manifest)
         restored_c_target["targets"].append({
@@ -406,25 +382,6 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(generator.GeneratorError, "must not restore"):
             generator.validate_manifest(restored_bridging_flags, generator.REPO_ROOT)
-
-        bad_resources = deepcopy(self.manifest)
-        for target in bad_resources["targets"]:
-            if target["name"] == "RepoPromptCodeMapCoreTests":
-                target["resources"] = []
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptCodeMapCoreTests"):
-            generator.validate_manifest(bad_resources, generator.REPO_ROOT)
-
-        moved_resources = deepcopy(bad_resources)
-        moved_resources["targets"].append({
-            "name": "RepoPromptWorkspaceTests",
-            "type": "test",
-            "resources": [
-                {"path": "Fixtures", "rule": {"copy": {}}},
-                {"path": "Goldens", "rule": {"copy": {}}},
-            ],
-        })
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptCodeMapCoreTests"):
-            generator.validate_manifest(moved_resources, generator.REPO_ROOT)
 
         missing_rust_bridge_target = deepcopy(self.manifest)
         missing_rust_bridge_target["targets"] = [
@@ -466,24 +423,6 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(generator.GeneratorError, "must not be exposed"):
             generator.validate_manifest(exposed_bridge_product, generator.REPO_ROOT)
-
-        duplicate_resources = deepcopy(self.manifest)
-        duplicate_resources["targets"].append({
-            "name": "RepoPromptWorkspaceTests",
-            "type": "test",
-            "resources": [
-                {"path": "Fixtures", "rule": {"copy": {}}},
-                {"path": "Goldens", "rule": {"copy": {}}},
-            ],
-        })
-        with self.assertRaisesRegex(generator.GeneratorError, "sole SwiftPM test target"):
-            generator.validate_manifest(duplicate_resources, generator.REPO_ROOT)
-
-        extra_resources = deepcopy(self.manifest)
-        for target in extra_resources["targets"]:
-            if target["name"] == "RepoPromptCodeMapCoreTests":
-                target["resources"].append({"path": "Extra/Fixtures", "rule": {"copy": {}}})
-        generator.validate_manifest(extra_resources, generator.REPO_ROOT)
 
     def test_generation_does_not_modify_package_authority(self) -> None:
         before = {name: digest(generator.REPO_ROOT / name) for name in ("Package.swift", "Package.resolved")}

@@ -48,6 +48,7 @@ struct ManageWorkspacesView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerSection
+            WorkspaceAuthorityIssueBanner(workspaceManager: workspaceManager)
             autoRestoreToggle
             duplicateCleanupCallout
             leakedWorkspaceCleanupCallout

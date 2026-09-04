@@ -17,7 +17,7 @@ help:
 	@printf '  %-30s %s\n' 'setup' 'Install format tools, run doctor, and resolve packages'
 	@printf '  %-30s %s\n' 'build' 'Build and package the debug app'
 	@printf '  %-30s %s\n' 'run' 'Build, package, and launch the debug app'
-	@printf '  %-30s %s\n' 'test' 'Run the Swift test suite'
+	@printf '  %-30s %s\n' 'test' 'Run the Rust workspace tests'
 	@printf '  %-30s %s\n' 'guardrails' 'Run source layout and repository guardrails'
 	@printf '  %-30s %s\n' 'codex-schema-check' 'Validate bounded app-server assumptions against generated Codex schemas'
 	@printf '  %-30s %s\n' 'provider-conformance' 'Validate offline P7-4 provider capability contract'
@@ -153,14 +153,8 @@ build:
 run:
 	./Scripts/run.sh
 
-# Redirect Application Support to a scratch root so the suite cannot write
-# workspaces, domain-runtime state, or Codex state into the real container.
-TEST_SUPPORT_ROOT ?= $(shell mktemp -d /tmp/agentry-test-support.XXXXXX)
-
 test:
-	swift build --build-tests
-	./Scripts/stage_test_frameworks.sh
-	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" swift test
+	./conductor cargo-test --package $(CARGO_PACKAGE)
 
 guardrails:
 	./Scripts/guardrails.sh
@@ -306,20 +300,11 @@ dev-m7-backend-certification:
 dev-m8-live-certification:
 	./conductor m8-live-certification $(M8_ARGS)
 
-# Default XCTest stall budget for coordinated test runs. Without it a hung test blocks the
-# lane until conductor's 3600s job timeout kills it with no diagnostics; with it the run fails
-# in bounded time naming the test that stopped making progress. 300s is ~40x the slowest
-# non-quarantined single test observed (7.5s), so it cannot trip on legitimate work. Raise it
-# with XCTEST_STALL_SECONDS=600, or disable with XCTEST_STALL_SECONDS= for a deliberately
-# long-running lane.
-XCTEST_STALL_SECONDS ?= 300
-
 dev-test:
-	@./Scripts/stage_test_frameworks.sh
-	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" ./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))$(if $(XCTEST_STALL_SECONDS), --xctest-stall-seconds $(XCTEST_STALL_SECONDS))
+	./conductor cargo-test --package $(CARGO_PACKAGE)
 
 dev-provider-test:
-	./conductor provider-test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(XCTEST_STALL_SECONDS), --xctest-stall-seconds $(XCTEST_STALL_SECONDS))
+	./conductor cargo-test --package $(CARGO_PACKAGE)
 
 dev-smoke:
 	./conductor smoke

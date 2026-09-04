@@ -123,15 +123,9 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptSearchCore",
         "RepoPromptDomainRuntime",
         "RepoPromptCodeMapCore",
-        "RepoPromptWorkspaceCoreTests",
-        "RepoPromptSearchCoreTests",
-        "RepoPromptDomainRuntimeTests",
-        "RepoPromptCodeMapCoreTests",
-        "RepoPromptTests",
         "CAgentryRustCore",
         "AgentryUniFFIRaw",
         "AgentryCoreBridge",
-        "AgentryCoreBridgeTests",
     )
     for name in required_targets:
         if name not in targets:
@@ -174,7 +168,6 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "CAgentryRustCore": ("regular", "Sources/CAgentryRustCore", []),
         "AgentryUniFFIRaw": ("regular", "Sources/AgentryUniFFIRaw", ["CAgentryRustCore"]),
         "AgentryCoreBridge": ("regular", "Sources/AgentryCoreBridge", ["AgentryUniFFIRaw"]),
-        "AgentryCoreBridgeTests": ("test", "Tests/AgentryCoreBridgeTests", ["AgentryCoreBridge"]),
     }
     for name, (target_type, path, dependencies) in rust_ffi_targets.items():
         target = targets[name]
@@ -211,15 +204,9 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     if _by_name_dependencies(repo_prompt_app).count("RepoPromptSearchCore") != 1:
         raise GeneratorError("RepoPromptApp must depend exactly once on RepoPromptSearchCore")
 
-    search_core_tests = targets["RepoPromptSearchCoreTests"]
-    if search_core_tests.get("type") != "test":
-        raise GeneratorError("RepoPromptSearchCoreTests must remain a test target")
-    if search_core_tests.get("path") != "Tests/RepoPromptSearchCoreTests":
-        raise GeneratorError("RepoPromptSearchCoreTests target path drifted")
-    if _by_name_dependencies(search_core_tests) != ["RepoPromptSearchCore", "AgentryCoreBridge"]:
-        raise GeneratorError(
-            "RepoPromptSearchCoreTests must depend on RepoPromptSearchCore and AgentryCoreBridge"
-        )
+    for name, target in targets.items():
+        if target.get("type") == "test":
+            raise GeneratorError(f"Swift XCTest target must not return: '{name}'")
 
     forbidden_raw_dependencies = {"CAgentryRustCore", "AgentryUniFFIRaw"}
     for name in (
@@ -227,8 +214,6 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptApp",
         "RepoPromptMCP",
         "RepoPromptSearchCore",
-        "RepoPromptSearchCoreTests",
-        "RepoPromptTests",
     ):
         leaked = forbidden_raw_dependencies.intersection(_by_name_dependencies(targets[name]))
         if leaked:
@@ -246,21 +231,6 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             )
         if "RepoPromptSearchCore" in product.get("targets", []):
             raise GeneratorError("RepoPromptSearchCore must not be exposed as a package product")
-
-    expected_test_dependencies = {
-        "AgentryCoreBridge",
-        "RepoPromptApp",
-        "RepoPromptCodeMapCore",
-        "RepoPromptDomainRuntime",
-        "RepoPromptMCP",
-        "RepoPromptShared",
-    }
-    repo_prompt_tests = targets["RepoPromptTests"]
-    if set(_by_name_dependencies(repo_prompt_tests)) != expected_test_dependencies:
-        raise GeneratorError(
-            "RepoPromptTests must depend on AgentryCoreBridge, RepoPromptApp, RepoPromptCodeMapCore, "
-            "RepoPromptDomainRuntime, RepoPromptMCP, and RepoPromptShared"
-        )
 
     domain_runtime = targets["RepoPromptDomainRuntime"]
     if domain_runtime.get("type") != "regular":
@@ -286,13 +256,6 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         if "RepoPromptC" in _by_name_dependencies(targets[consumer_name]):
             raise GeneratorError(f"{consumer_name} must not depend on retired RepoPromptC")
 
-    domain_runtime_tests = targets["RepoPromptDomainRuntimeTests"]
-    if domain_runtime_tests.get("type") != "test":
-        raise GeneratorError("RepoPromptDomainRuntimeTests must remain a test target")
-    if domain_runtime_tests.get("path") != "Tests/RepoPromptDomainRuntimeTests":
-        raise GeneratorError("RepoPromptDomainRuntimeTests target path drifted")
-    if _by_name_dependencies(domain_runtime_tests) != ["RepoPromptDomainRuntime"]:
-        raise GeneratorError("RepoPromptDomainRuntimeTests must directly own RepoPromptDomainRuntime")
     if _by_name_dependencies(repo_prompt_app).count("RepoPromptDomainRuntime") != 1:
         raise GeneratorError("RepoPromptApp must depend exactly once on RepoPromptDomainRuntime")
 
@@ -308,23 +271,6 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         raise GeneratorError("RepoPromptApp must not restore Objective-C bridging-header flags")
     if (repo_root / "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").exists():
         raise GeneratorError("Retired RepoPromptApp bridging header must not return")
-
-    expected_resources = {("Fixtures", True), ("Goldens", True)}
-    test_targets_with_codemap_resources = []
-    for target in targets.values():
-        if target.get("type") != "test":
-            continue
-        resources = {
-            (resource.get("path"), "copy" in resource.get("rule", {}))
-            for resource in target.get("resources", [])
-        }
-        if expected_resources.issubset(resources):
-            test_targets_with_codemap_resources.append(target.get("name"))
-    if test_targets_with_codemap_resources != ["RepoPromptCodeMapCoreTests"]:
-        raise GeneratorError(
-            "RepoPromptCodeMapCoreTests must be the sole SwiftPM test target "
-            "that copies Fixtures and Goldens"
-        )
 
     required_paths = (
         "Package.swift",
@@ -382,7 +328,7 @@ def render_project(repository_relative_path: str) -> str:
     test_debug_id = stable_id("config:test:debug")
     test_release_id = stable_id("config:test:release")
 
-    folder_names = ("Sources", "Tests", "Packages", "AppBundle", "AppResources", "Scripts", "docs")
+    folder_names = ("Sources", "Packages", "AppBundle", "AppResources", "Scripts", "docs")
     folder_ids = {name: stable_id(f"folder:{name}") for name in folder_names}
     root_files = (
         ("Package.swift", "sourcecode.swift"),
@@ -662,16 +608,10 @@ This directory is disposable. Regenerate it with `make xcode-generate`; do not e
 
 - `Agentry App` builds and runs the canonical packaged debug app through conductor.
 - `Agentry MCP` builds the MCP executable through conductor.
-- `Agentry Tests` builds the authoritative XCTest suite through conductor. Set
-  `AGENTRY_XCODE_TEST_FILTER` before building to run a focused filter.
+- `Agentry Tests` runs the Rust workspace tests through conductor (`cargo test`).
 
-The root Swift package reference provides source browsing and indexing. Its native Xcode
-test action is not the supported full-suite workflow because Xcode does not expose the
-`RepoPromptMCP` executable dependency as an importable test module. The private native
-`AgentryCoreBridgeTests` scheme is intentionally supported for non-launching arm64
-`build-for-testing`: first prepare the verified archive with
-`make dev-cargo-archive PROFILE=debug`, or use the coordinated
-`make xcode-rust-link-validate` entrypoint. Xcode consumes only the checked-in generated
+The root Swift package reference provides source browsing and indexing. Native Xcode
+test actions are not used; XCTest targets were removed. Xcode consumes only the checked-in generated
 Swift/header plus `.build/agentry-rust/current`; edit `rust/` with rust-analyzer. The
 vendored Sparkle XCFramework also declares an omitted dSYMs directory; this generator
 deliberately does not mutate `Vendor/` to compensate. Use the convenience schemes above.
@@ -1053,7 +993,6 @@ def validate_xcodebuild_list(destination: Path) -> None:
         APP_SCHEME,
         MCP_SCHEME,
         TEST_SCHEME,
-        RUST_BRIDGE_TEST_SCHEME,
         NATIVE_APP_SCHEME,
         NATIVE_MCP_SCHEME,
     }
@@ -1066,29 +1005,8 @@ def validate_xcodebuild_list(destination: Path) -> None:
 
 
 def validate_rust_bridge_build_for_testing(destination: Path) -> None:
-    workspace = destination / WORKSPACE_NAME
-    command = [
-        "xcodebuild",
-        "-workspace",
-        str(workspace),
-        "-scheme",
-        RUST_BRIDGE_TEST_SCHEME,
-        "-configuration",
-        "Debug",
-        "-destination",
-        "platform=macOS,arch=arm64",
-        "ARCHS=arm64",
-        "ONLY_ACTIVE_ARCH=YES",
-        "CODE_SIGNING_ALLOWED=NO",
-        "build-for-testing",
-    ]
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-    except FileNotFoundError as error:
-        raise GeneratorError("xcodebuild is required; install/select Xcode") from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        raise GeneratorError(f"Rust bridge xcodebuild build-for-testing failed: {detail}")
+    """XCTest targets were removed; Rust coverage is `conductor cargo-test`."""
+    del destination
 
 
 def destination_from_argument(value: str) -> Path:
