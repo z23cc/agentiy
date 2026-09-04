@@ -4,11 +4,15 @@ import Foundation
 
 /// How `AgentSessionHostClient.connect` behaves when no host is listening.
 package enum AgentSessionHostSpawnPolicy {
+    /// Do not spawn. Used by Sparkle's two-phase update gate against an already-running host.
     case never
     /// Launch the Rust `agentry-mcp agent-host` from `executable` and wait up to `leaseWait` for its
     /// socket. A concurrently launched host that loses the lease exits 75 and the winner's socket is
     /// used. Production resolves `agentry-agent-host` (never the Swift MCP CLI).
     case spawnIfAbsent(executable: URL, extraArguments: [String] = [], environment: [String: String]? = nil, leaseWait: TimeInterval = 10)
+    /// The Rust helper is required and was not found. Connecting still succeeds if a host is already
+    /// listening; otherwise connect fails closed instead of silently running without a host.
+    case rustHelperMissing
 }
 
 package struct AgentSessionHostClientConfiguration {
@@ -175,21 +179,27 @@ package final class AgentSessionHostClient: @unchecked Sendable {
         do {
             return try AgentSessionHostSocketListener.connect(path: path)
         } catch {
-            guard case let .spawnIfAbsent(executable, extraArguments, environment, leaseWait) = configuration.spawn else {
+            switch configuration.spawn {
+            case let .spawnIfAbsent(executable, extraArguments, environment, leaseWait):
+                try spawnHost(executable: executable, extraArguments: extraArguments, environment: environment)
+                let deadline = Date().addingTimeInterval(leaseWait)
+                var lastError: Error = error
+                while Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                    do {
+                        return try AgentSessionHostSocketListener.connect(path: path)
+                    } catch {
+                        lastError = error
+                    }
+                }
+                throw AgentSessionHostClientError.hostUnavailable("\(path) after spawning host: \(lastError)")
+            case .rustHelperMissing:
+                throw AgentSessionHostClientError.spawnFailed(
+                    "Rust agent-host helper not found (expected Contents/MacOS/agentry-agent-host or .build/cargo/.../agentry-mcp)"
+                )
+            case .never:
                 throw AgentSessionHostClientError.hostUnavailable("\(path): \(error)")
             }
-            try spawnHost(executable: executable, extraArguments: extraArguments, environment: environment)
-            let deadline = Date().addingTimeInterval(leaseWait)
-            var lastError: Error = error
-            while Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-                do {
-                    return try AgentSessionHostSocketListener.connect(path: path)
-                } catch {
-                    lastError = error
-                }
-            }
-            throw AgentSessionHostClientError.hostUnavailable("\(path) after spawning host: \(lastError)")
         }
     }
 

@@ -24,6 +24,8 @@ actor HostAgentSessionConnection: AgentSessionConnection {
                     environment: AgentSessionHostLaunchEnvironment.production(),
                     leaseWait: 15
                 )
+            } else {
+                client.spawn = .rustHelperMissing
             }
             return Configuration(
                 client: client,

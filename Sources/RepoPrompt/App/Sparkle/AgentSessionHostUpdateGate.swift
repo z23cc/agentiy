@@ -4,10 +4,10 @@ import RepoPromptDomainRuntime
 
 /// Sparkle / two-phase update gate (design §4.4).
 ///
-/// Connects to an already-running host (`spawn: .never`) — Swift or Rust — and
-/// checkpoints before the new binary is allowed to take the lease. No host ⇒
-/// nothing to checkpoint. Host present + `allCheckpointed == false` ⇒ do not
-/// replace or stop the host.
+/// Connects to an already-running Rust host (`spawn: .never`) and checkpoints
+/// before the new binary is allowed to take the lease. No host ⇒ nothing to
+/// checkpoint. Host present + `allCheckpointed == false` ⇒ do not replace or
+/// stop the host.
 enum AgentSessionHostUpdateGate {
     static func prepareUpdateOrAllowIfNoHost() async -> Bool {
         let protocolVersion = (try? CoreAgentHostProtocol().limits().protocolVersion) ?? 1

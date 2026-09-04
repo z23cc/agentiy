@@ -80,6 +80,10 @@ package enum AgentSessionHostExecutable {
             for url in binaries(underCargoTarget: cargo) {
                 append(url)
             }
+            let rustTarget = root.appendingPathComponent("rust/target", isDirectory: true)
+            for url in binaries(underCargoTarget: rustTarget) {
+                append(url)
+            }
         }
         return urls
     }

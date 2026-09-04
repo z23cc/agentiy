@@ -9,98 +9,9 @@ package enum AgentSessionHostTransportError: Error, Equatable {
     case connectTimedOut
 }
 
-/// Blocking Unix-domain listener for the host socket (design §5.1). The socket directory is created
-/// 0700, the socket file is 0600, and a stale socket is only unlinked by the caller after the lease has
-/// been acquired (design §4.1) - `bind(path:)` does that unlink because it is only ever called by the
-/// lease holder.
-package final class AgentSessionHostSocketListener: @unchecked Sendable {
-    package let path: String
-    private let lock = NSLock()
-    private var descriptor: Int32
-
-    private init(path: String, descriptor: Int32) {
-        self.path = path
-        self.descriptor = descriptor
-    }
-
-    deinit {
-        close()
-    }
-
-    package static func bind(path: String, fileManager: FileManager = .default) throws -> AgentSessionHostSocketListener {
-        var address = try socketAddress(path: path)
-        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-        do {
-            try fileManager.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        } catch {
-            throw AgentSessionHostTransportError.io(operation: "mkdir", message: error.localizedDescription)
-        }
-        unlink(path)
-
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { throw errnoError("socket") }
-        _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
-        let bound = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
-                Darwin.bind(descriptor, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard bound == 0 else {
-            let error = errnoError("bind")
-            Darwin.close(descriptor)
-            throw error
-        }
-        chmod(path, 0o600)
-        guard listen(descriptor, 16) == 0 else {
-            let error = errnoError("listen")
-            Darwin.close(descriptor)
-            unlink(path)
-            throw error
-        }
-        return AgentSessionHostSocketListener(path: path, descriptor: descriptor)
-    }
-
-    /// Waits up to `timeout` for one connection. Returns `nil` on timeout so the accept loop can check
-    /// for shutdown; throws `.closed` once the listener has been closed.
-    package func accept(timeout: TimeInterval) throws -> Int32? {
-        let descriptor = lock.withLock { self.descriptor }
-        guard descriptor >= 0 else { throw AgentSessionHostTransportError.closed }
-        var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-        let ready = poll(&pollDescriptor, 1, Int32(max(0, timeout * 1000)))
-        if ready < 0 {
-            if errno == EINTR { return nil }
-            throw Self.errnoError("poll")
-        }
-        if ready == 0 { return nil }
-        let client = Darwin.accept(descriptor, nil, nil)
-        guard client >= 0 else {
-            if errno == EINTR || errno == ECONNABORTED { return nil }
-            if lock.withLock({ self.descriptor }) < 0 { throw AgentSessionHostTransportError.closed }
-            throw Self.errnoError("accept")
-        }
-        _ = fcntl(client, F_SETFD, FD_CLOEXEC)
-        return client
-    }
-
-    /// Closes the listening socket and unlinks the socket file. Idempotent.
-    package func close() {
-        let descriptor = lock.withLock {
-            let current = self.descriptor
-            self.descriptor = -1
-            return current
-        }
-        guard descriptor >= 0 else { return }
-        shutdown(descriptor, SHUT_RDWR)
-        Darwin.close(descriptor)
-        unlink(path)
-    }
-
-    /// Client side: connects to the host socket, failing fast when nothing listens.
+/// Client-side Unix-domain connect to the Rust `agentry-mcp agent-host` socket.
+package enum AgentSessionHostSocketListener {
+    /// Connects to the host socket, failing fast when nothing listens.
     package static func connect(path: String) throws -> Int32 {
         var address = try socketAddress(path: path)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -119,7 +30,7 @@ package final class AgentSessionHostSocketListener: @unchecked Sendable {
         return descriptor
     }
 
-    package static func socketAddress(path: String) throws -> sockaddr_un {
+    private static func socketAddress(path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
