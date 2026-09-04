@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "406500ed79dc4c45917784f56e5f66091d5eb79b7703df54fa17a7dc525ab2f6",
-  "bindingChecksum": "bd65097fec02639f652923f23985db779ec9a7ee3a63afa101623764a5e63b84",
+  "buildFingerprint": "0c7a2a678a6d14a1487918c0109ef4fc3b0d189fb995db4defd6271cd1b20544",
+  "bindingChecksum": "3ddf7291695f74c3b6bfaa091e5d1c67d6368928863dc0c18b089b193b79a6de",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:cfadd96b6055c04deabe480a941ace93f263a1ada68939fe00c03064668e84e5",
+    "rustSourceRevision": "tree:eaa348a8b3a0f8935648609010e7d388710d9b6e812e13c7ad0325f5cd04abec",
     "cargoLockDigest": "7b0aaaef31c684b861d19ce9422dcbb414796f78ebdbf61930b5c4f233188709",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "7320f0812b0d759b80f48b65a218d3e81d45407e7ba7cdaccd2c1a69a59da17f",
+  "archiveSha256": "ff5622ad3b52349afeaae1a53dcc5f589c4901c83136da7b3a5260664ecb7dd4",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -209,16 +209,12 @@
     "CorePreparedWorkspaceCommandAdmissionV1.isWorkspaceQuarantined(string) throws -> bool",
     "CorePreparedWorkspaceCommandAdmissionV1.quarantinedWorkspaces() throws -> sequence<string>",
     "CorePreparedWorkspaceCommandAdmissionV1.quarantineReason(string) throws -> string?",
-    "CorePreparedWorkspaceCommandAdmissionV1.quarantineState() throws -> CoreWorkspaceQuarantineStateResponseV1",
-    "CorePreparedWorkspaceCreateTransactionV1.commitDirect(string) throws -> CoreWorkspaceCreateDirectiveResponseV1",
-    "CorePreparedWorkspaceSaveTransactionV1.commitDirect(string) throws -> CoreWorkspaceSaveDirectiveResponseV1",
-    "CorePreparedWorkspaceDeleteTransactionV1.commitDirect(string) throws -> CoreWorkspaceDeleteDirectiveResponseV1",
-    "CorePreparedWorkspaceJournalMutationTransactionV1.commitDirect(string) throws -> CoreWorkspaceJournalMutationDirectiveResponseV1"
+    "CorePreparedWorkspaceCommandAdmissionV1.quarantineState() throws -> CoreWorkspaceQuarantineStateResponseV1"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "67abb48ba284e67a8e624be46f99e4466d3119340f8c9049691af74955c3efa2",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "09df27bc17341036dad450a7d6ab89b8ed7291f745f5317b36d5e7c9e49a777b",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "d8d75d5d861fd4a96ae5ccf14f0a064169a2c513efb10bfdcae0814dfb99e03f",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "dceb5a47c0cdbace46cf6b0329fcf3148e23d6a3dd32700d5be402a1a0af3b9c",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "3f0ccef2a810db1179d75e5716b37f8099fcca19909de66dbf2e0b80909cc551",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "876ee1d924d05356b279cc5a779f4b8b4255e9b988bf91bae31335f286266909",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e",
     "rust/crates/proto/src/generated/agent_host_v1.rs": "fa19fd8c4c625f82b32429f54cde518987cafdeab113802a34f61513d96e69d6"

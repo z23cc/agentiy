@@ -306,8 +306,10 @@ impl AgentPermissionPolicyEvaluatorV1 {
     ) -> Result<AgentPermissionEvalResultV1, CoreError> {
         self.guard.call(|| {
             let policy: v1::PermissionPolicy = policy.into();
-            let result =
-                runtime::agent_provider_semantics::evaluate_permission_policy(&policy, &request.into());
+            let result = runtime::agent_provider_semantics::evaluate_permission_policy(
+                &policy,
+                &request.into(),
+            );
             Ok(AgentPermissionEvalResultV1 {
                 disposition: AgentHostToolDispositionV1::from(result.disposition),
                 reason: result.reason.into(),
@@ -481,7 +483,8 @@ impl AgentProviderAcpSemanticsV1 {
     }
 
     pub fn settle_approval(&self, approval_id: String) -> Result<bool, CoreError> {
-        self.guard.call(|| Ok(lock(&self.state)?.settle_approval(&approval_id)))
+        self.guard
+            .call(|| Ok(lock(&self.state)?.settle_approval(&approval_id)))
     }
 
     pub fn is_terminal(&self) -> Result<bool, CoreError> {
@@ -532,12 +535,8 @@ impl AgentProviderCodexSemanticsV1 {
         request_id: Option<String>,
     ) -> Result<Vec<AgentHostRuntimeEventV1>, CoreError> {
         self.guard.call(|| {
-            let events = lock(&self.state)?.apply(
-                &method,
-                &params_json,
-                &run_id,
-                request_id.as_deref(),
-            );
+            let events =
+                lock(&self.state)?.apply(&method, &params_json, &run_id, request_id.as_deref());
             events_from(events)
         })
     }
@@ -547,9 +546,7 @@ impl AgentProviderCodexSemanticsV1 {
         method: String,
     ) -> Result<Option<AgentProviderCodexServerRequestKindV1>, CoreError> {
         self.guard.call(|| {
-            Ok(
-                runtime::agent_provider_semantics::classify_server_request(&method).map(Into::into),
-            )
+            Ok(runtime::agent_provider_semantics::classify_server_request(&method).map(Into::into))
         })
     }
 
@@ -591,10 +588,12 @@ impl AgentProviderCodexSemanticsV1 {
     ) -> Result<Vec<AgentProviderCodexModelOptionV1>, CoreError> {
         self.guard.call(|| {
             let options: Vec<CodexModelOption> = options.into_iter().map(Into::into).collect();
-            Ok(runtime::agent_provider_semantics::collapse_model_options(&options)
-                .into_iter()
-                .map(Into::into)
-                .collect())
+            Ok(
+                runtime::agent_provider_semantics::collapse_model_options(&options)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            )
         })
     }
 
@@ -608,7 +607,8 @@ impl AgentProviderCodexSemanticsV1 {
         preserving_explicit_effort: bool,
     ) -> Result<AgentProviderCodexSelectionV1, CoreError> {
         self.guard.call(|| {
-            let supported: Vec<CodexReasoningEffort> = supported.into_iter().map(Into::into).collect();
+            let supported: Vec<CodexReasoningEffort> =
+                supported.into_iter().map(Into::into).collect();
             let selection = runtime::agent_provider_semantics::negotiate_selection(
                 &selected_model_raw,
                 explicit_effort.as_deref(),
@@ -653,7 +653,8 @@ impl AgentProviderCodexSemanticsV1 {
     }
 
     pub fn settle_approval(&self, approval_id: String) -> Result<bool, CoreError> {
-        self.guard.call(|| Ok(lock(&self.state)?.settle_approval(&approval_id)))
+        self.guard
+            .call(|| Ok(lock(&self.state)?.settle_approval(&approval_id)))
     }
 
     pub fn is_terminal(&self) -> Result<bool, CoreError> {
@@ -682,7 +683,9 @@ pub struct AgentProviderCodexLifecycleEventV1 {
     pub dedup_key: String,
 }
 
-impl From<runtime::agent_provider_semantics::ToolLifecycleEvent> for AgentProviderCodexLifecycleEventV1 {
+impl From<runtime::agent_provider_semantics::ToolLifecycleEvent>
+    for AgentProviderCodexLifecycleEventV1
+{
     fn from(value: runtime::agent_provider_semantics::ToolLifecycleEvent) -> Self {
         Self {
             kind: value.kind_name().to_string(),
@@ -740,7 +743,9 @@ pub struct AgentProviderCodexRunningUpdateV1 {
     pub seals_assistant_boundary: bool,
 }
 
-impl From<AgentProviderCodexRunningUpdateV1> for runtime::agent_provider_semantics::CommandExecutionRunningUpdate {
+impl From<AgentProviderCodexRunningUpdateV1>
+    for runtime::agent_provider_semantics::CommandExecutionRunningUpdate
+{
     fn from(value: AgentProviderCodexRunningUpdateV1) -> Self {
         Self {
             invocation_id: value.invocation_id,
@@ -751,7 +756,9 @@ impl From<AgentProviderCodexRunningUpdateV1> for runtime::agent_provider_semanti
     }
 }
 
-impl From<runtime::agent_provider_semantics::CommandExecutionRunningUpdate> for AgentProviderCodexRunningUpdateV1 {
+impl From<runtime::agent_provider_semantics::CommandExecutionRunningUpdate>
+    for AgentProviderCodexRunningUpdateV1
+{
     fn from(value: runtime::agent_provider_semantics::CommandExecutionRunningUpdate) -> Self {
         Self {
             invocation_id: value.invocation_id,
@@ -867,7 +874,9 @@ impl AgentProviderCodexLifecycleV1 {
 
     pub fn sanitize_command_output(&self, raw: String) -> Result<String, CoreError> {
         self.guard.call(|| {
-            Ok(runtime::agent_provider_semantics::sanitize_command_output(&raw))
+            Ok(runtime::agent_provider_semantics::sanitize_command_output(
+                &raw,
+            ))
         })
     }
 

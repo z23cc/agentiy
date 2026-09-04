@@ -269,7 +269,3 @@ CorePreparedWorkspaceCommandAdmissionV1.isWorkspaceQuarantined(string) throws ->
 CorePreparedWorkspaceCommandAdmissionV1.quarantinedWorkspaces() throws -> sequence<string>
 CorePreparedWorkspaceCommandAdmissionV1.quarantineReason(string) throws -> string?
 CorePreparedWorkspaceCommandAdmissionV1.quarantineState() throws -> CoreWorkspaceQuarantineStateResponseV1
-CorePreparedWorkspaceCreateTransactionV1.commitDirect(string) throws -> CoreWorkspaceCreateDirectiveResponseV1
-CorePreparedWorkspaceSaveTransactionV1.commitDirect(string) throws -> CoreWorkspaceSaveDirectiveResponseV1
-CorePreparedWorkspaceDeleteTransactionV1.commitDirect(string) throws -> CoreWorkspaceDeleteDirectiveResponseV1
-CorePreparedWorkspaceJournalMutationTransactionV1.commitDirect(string) throws -> CoreWorkspaceJournalMutationDirectiveResponseV1
