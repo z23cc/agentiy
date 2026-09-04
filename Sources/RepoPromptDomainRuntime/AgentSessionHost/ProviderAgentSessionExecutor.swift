@@ -68,6 +68,7 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
     private let hostedAcp = CoreHostedAcpSemantics()
     private let hostedCodexLifecycle = CoreHostedCodexLifecycle()
     private var pendingInteraction: PendingHostedInteraction?
+    package private(set) var lastClaudePermissionDecision: (requestID: String, decision: CoreAgentPermissionDecision)?
 
     package init(
         sessionID: String,
@@ -351,12 +352,14 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         lock.withLock { providerSessionID = threadID }
     }
 
+    private typealias AgentHostModelOptionV1 = CoreHostedCodexModelOption
+
     private func negotiateCodexSelection(
         spec: AgentHostSessionSpecV1,
         initializeJSON: String,
         transport: any ProviderHostedRuntimeTransport
     ) async {
-        var options = modelOptions(fromInitializeJSON: initializeJSON)
+        var options = collapseModelOptions(initializeJSON: initializeJSON)
         if options.isEmpty, let data = try? await transport.request(
             method: "model/list",
             paramsJSON: #"{"limit":100}"#,
@@ -364,40 +367,63 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         ) {
             options = modelOptions(fromListJSON: ProviderHostedJSON.string(from: data))
         }
-        let collapsed = (try? hostedCodex.collapseModelOptions(options)) ?? options
-        let selected = spec.modelId.isEmpty
-            ? (collapsed.first(where: { $0.isProviderDefault })?.rawValue ?? collapsed.first?.rawValue ?? "default")
-            : spec.modelId
-        let match = collapsed.first { $0.rawValue.caseInsensitiveCompare(selected) == .orderedSame }
-            ?? collapsed.first
+        let selection = negotiateSelection(
+            modelOptions: options,
+            requestedModel: spec.modelId.isEmpty ? nil : spec.modelId,
+            requestedEffort: spec.reasoningEffort.isEmpty ? nil : spec.reasoningEffort
+        )
+        negotiatedModel = selection.model
+        negotiatedEffort = selection.effort
+    }
+
+    private func collapseModelOptions(initializeJSON: String) -> [CoreHostedCodexModelOption] {
+        modelOptions(fromInitializeJSON: initializeJSON)
+    }
+
+    private func negotiateSelection(
+        modelOptions: [CoreHostedCodexModelOption],
+        requestedModel: String?,
+        requestedEffort: String?
+    ) -> (model: String, effort: String) {
+        let selected = (requestedModel?.isEmpty == false)
+            ? requestedModel!
+            : (modelOptions.first(where: { $0.isProviderDefault })?.rawValue ?? modelOptions.first?.rawValue ?? "default")
+        let match = modelOptions.first { $0.rawValue.caseInsensitiveCompare(selected) == .orderedSame }
+            ?? modelOptions.first
         let negotiated = try? hostedCodex.negotiateSelection(
             selectedModelRaw: selected,
-            explicitEffort: spec.reasoningEffort.isEmpty ? nil : spec.reasoningEffort,
+            explicitEffort: (requestedEffort?.isEmpty == false) ? requestedEffort : nil,
             lastUsedEffort: nil,
             supported: match?.supportedReasoningEfforts ?? [],
             defaultEffort: match?.defaultReasoningEffort,
             preservingExplicitEffort: true
         )
-        negotiatedModel = negotiated?.modelRaw ?? (spec.modelId.isEmpty ? "" : spec.modelId)
-        if let effort = negotiated?.reasoningEffort {
-            negotiatedEffort = effortWire(effort)
+        let model = negotiated?.modelRaw ?? selected
+        let effort: String
+        if let negotiatedEffort = negotiated?.reasoningEffort {
+            effort = effortWire(negotiatedEffort)
         } else {
-            negotiatedEffort = spec.reasoningEffort
+            effort = requestedEffort ?? ""
         }
+        return (model, effort)
     }
 
     private func modelOptions(fromInitializeJSON json: String) -> [CoreHostedCodexModelOption] {
         let object = ProviderHostedJSON.object(from: json)
+        let rawOptions: [CoreHostedCodexModelOption]
         if let models = object["models"] as? [[String: Any]] {
-            return models.compactMap(modelOption(from:))
+            rawOptions = models.compactMap(modelOption(from:))
+        } else {
+            rawOptions = []
         }
-        return []
+        return (try? hostedCodex.collapseModelOptions(rawOptions)) ?? rawOptions
     }
 
     private func modelOptions(fromListJSON json: String) -> [CoreHostedCodexModelOption] {
         let object = ProviderHostedJSON.object(from: json)
         let items = (object["data"] as? [[String: Any]]) ?? []
-        return items.compactMap(modelOption(from:))
+        let rawOptions = items.compactMap(modelOption(from:))
+        return (try? hostedCodex.collapseModelOptions(rawOptions)) ?? rawOptions
     }
 
     private func modelOption(from entry: [String: Any]) -> CoreHostedCodexModelOption? {
@@ -731,7 +757,7 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         }
     }
 
-    private func handleClaudeEvent(_ event: CoreAgentSessionEvent) {
+    package func handleClaudeEvent(_ event: CoreAgentSessionEvent) {
         let receipt = lock.withLock { currentRun }
         guard let receipt, isLive(receipt) else { return }
         switch event.kind {
@@ -743,10 +769,156 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         case "error":
             let text = event.stringField("message") ?? "provider error"
             terminateRun(receipt, kind: .providerFailure, outcome: .failed, failureReason: .agentError, assistantText: text)
+        case "approvalRequest", "can_use_tool":
+            handleClaudePermissionRequest(event, receipt: receipt)
+        case "approvalCancelled":
+            handleClaudeApprovalCancelled(event)
         default:
             if let text = event.stringField("text"), !text.isEmpty {
                 emitStream(receipt, itemType: event.kind, text: text)
             }
+        }
+    }
+
+    private func handleClaudePermissionRequest(_ event: CoreAgentSessionEvent, receipt: AgentSessionExecutorRunReceipt) {
+        let requestID = event.stringField("request_id") ?? event.stringField("requestId") ?? event.stringField("id") ?? UUID().uuidString.lowercased()
+        let toolName = (event.stringField("tool_name") ?? event.stringField("toolName") ?? event.stringField("tool"))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "tool"
+        let input = (event.fields["input"] as? [String: Any]) ?? (event.fields["inputJson"] as? [String: Any]) ?? [:]
+        let command = (input["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blockedPath = event.stringField("blocked_path") ?? event.stringField("blockedPath")
+        let decisionReason = event.stringField("decision_reason") ?? event.stringField("decisionReason")
+        let description = event.stringField("description")
+        let toolUseID = (event.stringField("tool_use_id") ?? event.stringField("toolUseId"))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = description ?? decisionReason ?? toolName
+
+        let lowerTool = toolName.lowercased()
+        let kind: AgentHostApprovalKindV1
+        if lowerTool.contains("bash") || lowerTool.contains("command") || lowerTool.contains("exec") || command != nil {
+            kind = .commandExecution
+        } else if lowerTool.contains("file") || lowerTool.contains("edit") || lowerTool.contains("write") || lowerTool.contains("patch") || blockedPath != nil {
+            kind = .fileChange
+        } else {
+            kind = .unspecified
+        }
+
+        let itemID = (toolUseID?.isEmpty == false ? toolUseID! : requestID)
+        let approval = AgentHostApprovalRequestV1(
+            approvalId: itemID,
+            requestId: requestID,
+            requestIdSource: .claudeControl,
+            method: "can_use_tool",
+            kind: kind,
+            threadId: lock.withLock { providerSessionID },
+            turnId: receipt.turnID,
+            itemId: itemID,
+            reason: reason,
+            command: command.map { [$0] } ?? [],
+            cwd: spec.worktreeId,
+            grantRoot: blockedPath ?? "",
+            proposedExecpolicyAmendmentJson: "",
+            details: []
+        )
+
+        let policy = spec.permissionPolicy ?? AgentHostPermissionPolicyV1(
+            approvalPolicy: .declineUnattended,
+            toolPreferences: [],
+            providerSettings: [],
+            interactionTimeoutSeconds: 0
+        )
+        let payload = (event.fields["request_payload"] as? [String: Any]) ?? event.fields
+        let payloadJSON = ProviderHostedJSON.string(fromJSONObject: payload)
+        let request = AgentPermissionEvalRequestV1(
+            toolId: itemID,
+            requestToolName: toolName,
+            requestPayloadJson: payloadJSON,
+            providerTrusted: false,
+            kind: kind
+        )
+        let result = try? permissionEvaluator.evaluate(policy: policy, request: request)
+        let disposition = result?.disposition ?? .ask
+        switch disposition {
+        case .allow:
+            respondClaudePermission(requestID: requestID, decision: .allow(includeUpdatedPermissions: false))
+        case .deny:
+            respondClaudePermission(requestID: requestID, decision: .deny(message: "Permission denied by policy", interrupt: false))
+        case .ask, .unspecified:
+            requestClaudeAsk(
+                requestID: requestID,
+                approval: approval,
+                paramsJSON: payloadJSON,
+                receipt: receipt
+            )
+        }
+    }
+
+    private func respondClaudePermission(requestID: String, decision: CoreAgentPermissionDecision) {
+        lastClaudePermissionDecision = (requestID, decision)
+        let session = lock.withLock { claudeSession }
+        guard let session else { return }
+        Task {
+            try? await session.respondPermission(requestID: requestID, decision: decision)
+        }
+    }
+
+    private func requestClaudeAsk(
+        requestID: String,
+        approval: AgentHostApprovalRequestV1,
+        paramsJSON: String,
+        receipt: AgentSessionExecutorRunReceipt
+    ) {
+        let interactionID = approval.approvalId.isEmpty ? requestID : approval.approvalId
+        let pending = PendingHostedInteraction(
+            interactionID: interactionID,
+            idJSON: Data(requestID.utf8),
+            approval: approval,
+            permissions: false,
+            acpOptions: [],
+            paramsJSON: paramsJSON,
+            receipt: receipt
+        )
+        lock.withLock { pendingInteraction = pending }
+        let interaction = AgentHostPendingInteractionV1(
+            interactionId: interactionID,
+            interactionGeneration: Data(interactionID.utf8.prefix(8)),
+            kind: .approval,
+            responseType: .decision,
+            title: approval.reason.isEmpty ? approval.method : approval.reason,
+            prompt: approval.reason.isEmpty ? "Approve this tool call?" : approval.reason,
+            context: approval.command.joined(separator: " "),
+            allowsMultiple: false,
+            options: [],
+            fields: [],
+            details: approval.details,
+            approval: approval,
+            requestedAt: AgentSessionHostClock.rfc3339(),
+            timeoutSeconds: spec.permissionPolicy?.interactionTimeoutSeconds ?? 0,
+            runId: receipt.runID,
+            turnId: receipt.turnID
+        )
+        sink.emit(.interaction(AgentHostInteractionEventV1(
+            kind: .requested(AgentHostInteractionRequestedV1(interaction: interaction))
+        )))
+        emitLifecycle(receipt, kind: .stageChanged(AgentHostRunStageChangedV1(
+            stage: .waitingForInteraction,
+            retryIntent: .none
+        )))
+    }
+
+    private func handleClaudeApprovalCancelled(_ event: CoreAgentSessionEvent) {
+        let requestID = event.stringField("request_id")
+        let pending = lock.withLock { () -> PendingHostedInteraction? in
+            guard let current = pendingInteraction else { return nil }
+            if let requestID, current.approval.requestId != requestID {
+                return nil
+            }
+            pendingInteraction = nil
+            return current
+        }
+        if let pending, isLive(pending.receipt) {
+            emitLifecycle(pending.receipt, kind: .stageChanged(AgentHostRunStageChangedV1(
+                stage: .running,
+                retryIntent: .none
+            )))
         }
     }
 
@@ -793,6 +965,13 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
             emitSemanticEvents(events, receipt: receipt)
             if let lifecycle = try? hostedCodexLifecycle.applyFileChange(method: method, paramsJSON: payload) {
                 emitLifecycleEvent(lifecycle, receipt: receipt)
+            }
+            if let runningUpdate = try? hostedCodexLifecycle.parseCommandExecutionRunningUpdate(method: method, paramsJSON: payload) {
+                let applyResult = try? hostedCodexLifecycle.applyCommandExecutionRunningUpdate(runningUpdate, items: [])
+                _ = applyResult
+                if let output = runningUpdate.appendedOutput, !output.isEmpty {
+                    emitStream(receipt, itemType: "commandExecution", text: output)
+                }
             }
         case .acp:
             if method == "session/update" {
@@ -901,6 +1080,15 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
             return CoreHostedAcpPermissionOption(optionId: optionID, kind: kind)
         }
         let approvalKind = (try? hostedAcp.approvalKind(forToolKind: toolKind)) ?? .unspecified
+        let rawInput = toolCall["rawInput"]
+        let command: [String]
+        if let rawDict = rawInput as? [String: Any], let cmd = rawDict["command"] as? String {
+            command = [cmd]
+        } else if let cmd = rawInput as? String {
+            command = [cmd]
+        } else {
+            command = []
+        }
         let approval = AgentHostApprovalRequestV1(
             approvalId: toolCallID,
             requestId: idDisplay,
@@ -911,7 +1099,7 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
             turnId: receipt.turnID,
             itemId: toolCallID,
             reason: toolTitle ?? "",
-            command: [],
+            command: command,
             cwd: spec.worktreeId,
             grantRoot: "",
             proposedExecpolicyAmendmentJson: "",
@@ -952,6 +1140,35 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         let disposition = result?.disposition ?? .ask
         switch disposition {
         case .allow:
+            if hostedKind == .acp {
+                let toolName = approval.reason.isEmpty ? approval.method : approval.reason
+                if let autoOptionID = try? hostedAcp.autoApprovalOptionId(
+                    requestToolName: toolName,
+                    payloadJSON: paramsJSON,
+                    options: acpOptions,
+                    provider: acpKind(of: spec.providerId)
+                ), !autoOptionID.isEmpty {
+                    respondPermission(
+                        idJSON: idJSON,
+                        decision: .accept,
+                        approval: approval,
+                        permissions: permissions,
+                        acpOptions: acpOptions,
+                        paramsJSON: paramsJSON,
+                        acpSelectedOptionId: autoOptionID
+                    )
+                } else {
+                    requestAsk(
+                        idJSON: idJSON,
+                        approval: approval,
+                        permissions: permissions,
+                        acpOptions: acpOptions,
+                        paramsJSON: paramsJSON,
+                        receipt: receipt
+                    )
+                }
+                return
+            }
             respondPermission(
                 idJSON: idJSON,
                 decision: .accept,
@@ -1038,14 +1255,28 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         } else {
             decision = .decline
         }
-        respondPermission(
-            idJSON: pending.idJSON,
-            decision: decision,
-            approval: pending.approval,
-            permissions: pending.permissions,
-            acpOptions: pending.acpOptions,
-            paramsJSON: pending.paramsJSON
-        )
+        if hostedKind == .claude || pending.approval.requestIdSource == .claudeControl {
+            let requestID = String(data: pending.idJSON, encoding: .utf8) ?? pending.approval.requestId
+            let claudeDecision: CoreAgentPermissionDecision
+            switch decision {
+            case .accept, .acceptForSession, .acceptWithExecpolicyAmendment:
+                claudeDecision = .allow(includeUpdatedPermissions: false)
+            case .decline:
+                claudeDecision = .deny(message: "Permission declined by user", interrupt: false)
+            case .cancel, .unspecified:
+                claudeDecision = .deny(message: "Permission cancelled by user", interrupt: answer.skipped)
+            }
+            respondClaudePermission(requestID: requestID, decision: claudeDecision)
+        } else {
+            respondPermission(
+                idJSON: pending.idJSON,
+                decision: decision,
+                approval: pending.approval,
+                permissions: pending.permissions,
+                acpOptions: pending.acpOptions,
+                paramsJSON: pending.paramsJSON
+            )
+        }
         if isLive(pending.receipt) {
             emitLifecycle(pending.receipt, kind: .stageChanged(AgentHostRunStageChangedV1(
                 stage: .running,
@@ -1060,11 +1291,20 @@ package final class ProviderAgentSessionExecutor: AgentSessionExecutor, @uncheck
         approval: AgentHostApprovalRequestV1,
         permissions: Bool,
         acpOptions: [CoreHostedAcpPermissionOption],
-        paramsJSON: String
+        paramsJSON: String,
+        acpSelectedOptionId: String? = nil
     ) {
         _ = try? hostedCodex.settleApproval(approval.approvalId)
         _ = try? hostedAcp.settleApproval(approval.approvalId)
         if hostedKind == .acp {
+            if let acpSelectedOptionId {
+                let result: [String: Any] = [
+                    "outcome": "selected",
+                    "optionId": acpSelectedOptionId
+                ]
+                respondHosted(idJSON: idJSON, resultJSON: Data(ProviderHostedJSON.string(fromJSONObject: result).utf8))
+                return
+            }
             let mapping = (try? hostedAcp.mapApprovalDecision(
                 decision,
                 options: acpOptions,
